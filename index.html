@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>手机网页音频采集与波形显示（纯原生，含 iOS 兼容）</title>
+  <title>VOXIN</title>
   <style>
     :root{--bg:#0b1220;--card:#121a2b;--soft:#1f2a44;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--accent2:#22d3ee;--danger:#fb7185}
     *{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
@@ -22,7 +22,7 @@
     .slider{width:100%}
     .grid{display:grid;grid-template-columns:1fr;gap:12px}
     .hint{font-size:12px;color:#93a3b8}
-    .pill{display:inline-block;font-size:12px;padding:4px 8px;border-radius:999px;background:#0f172a;color:#93c5fd;border:1px solid #0b284a}
+    .pill{display:inline-block;font-size:12px;padding:4px 8px;border-radius:999px;background:#0f172a;border:1px solid #0b284a}
     canvas{display:block;width:100%;height:200px;border-radius:12px;background:#0a1221}
     .badge{font-size:12px;color:#cbd5e1}
     .footer{font-size:12px;color:#94a3b8;text-align:center;margin-top:16px}
@@ -32,9 +32,9 @@
 <body>
   <div class="wrap">
     <header>
-      <h1>手机网页音频采集与波形显示（含 iOS 兼容）</h1>
+      <h1>开启你的声音训练之旅吧！🎤✨🚀</h1>
       <div class="sub">
-        基于 Web Audio API。请在 <b>HTTPS</b> 或 <b>localhost</b> 下打开；iOS 需先点击“开始”激活音频上下文。
+        
         <span id="supportHint" class="hint" style="display:block;margin-top:4px"></span>
       </div>
     </header>
@@ -85,7 +85,7 @@
       <div class="card" id="recorderCard">
         <div class="row" style="justify-content:space-between">
           <strong>录音</strong>
-          <span class="hint" id="recHint">使用 MediaRecorder（部分旧版 iOS 不支持）</span>
+          <span class="hint" id="recHint">VOXIN</span>
         </div>
         <div class="row" style="margin-top:8px;gap:8px">
           <button id="recBtn" class="secondary" disabled>开始录音</button>
@@ -96,14 +96,12 @@
 
       <div class="card">
         <ul class="hint" style="margin:0 0 0 18px">
-          <li>若无法列出设备，直接“开始”将使用默认麦克风（iOS 通常不支持切换设备）。</li>
-          <li>已关闭回声消除/降噪/自动增益以获得更原始的波形。</li>
-          <li>iOS 12 及更早版本可能仅支持旧接口，已自动降级；若仍失败，请升级系统或改用 Safari/系统浏览器。</li>
+          <li>若无法列出设备，直接“开始”将使用默认麦克风（iOS 通常不支持切换设备）</li>
         </ul>
       </div>
     </section>
 
-    <div class="footer">© <span id="year"></span> Wave Demo</div>
+    <div class="footer">© <span id="year"></span> VOXIN Demo</div>
   </div>
 
 <script>
