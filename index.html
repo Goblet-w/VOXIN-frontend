@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>手机网页音频采集与波形显示（纯原生，含 iOS 兼容）</title>
+  <style>
+    :root{--bg:#0b1220;--card:#121a2b;--soft:#1f2a44;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--accent2:#22d3ee;--danger:#fb7185}
+    *{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{max-width:760px;margin:0 auto;padding:16px}
+    h1{font-size:22px;margin:8px 0 6px}
+    .sub{color:var(--muted);font-size:13px}
+    .card{background:var(--card);border:1px solid #0e172a;border-radius:16px;box-shadow:0 2px 14px rgba(0,0,0,.2);padding:12px}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button,select,input[type=range]{appearance:none;border:none}
+    button{padding:10px 14px;border-radius:12px;color:#0b1220;background:var(--accent);font-weight:600}
+    button.secondary{background:#334155;color:#e2e8f0}
+    button.danger{background:var(--danger);color:#fff}
+    button:disabled{opacity:.6}
+    select{padding:10px;border-radius:10px;background:#1f2937;color:#e5e7eb}
+    label{font-size:13px;color:var(--muted)}
+    .slider{width:100%}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px}
+    .hint{font-size:12px;color:#93a3b8}
+    .pill{display:inline-block;font-size:12px;padding:4px 8px;border-radius:999px;background:#0f172a;color:#93c5fd;border:1px solid #0b284a}
+    canvas{display:block;width:100%;height:200px;border-radius:12px;background:#0a1221}
+    .badge{font-size:12px;color:#cbd5e1}
+    .footer{font-size:12px;color:#94a3b8;text-align:center;margin-top:16px}
+    @media (min-width:720px){canvas{height:260px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>手机网页音频采集与波形显示（含 iOS 兼容）</h1>
+      <div class="sub">
+        基于 Web Audio API。请在 <b>HTTPS</b> 或 <b>localhost</b> 下打开；iOS 需先点击“开始”激活音频上下文。
+        <span id="supportHint" class="hint" style="display:block;margin-top:4px"></span>
+      </div>
+    </header>
+
+    <section class="card" id="displayCard">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <span class="badge" id="sr">采样率: —</span>
+        <span class="pill" id="peak">峰值: 0%</span>
+      </div>
+      <canvas id="wave"></canvas>
+      <div style="height:10px"></div>
+      <canvas id="spectrum" aria-label="频谱图"></canvas>
+    </section>
+
+    <section class="grid" style="margin-top:12px">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <button id="toggle">开始</button>
+            <button class="secondary" id="reenum">刷新设备</button>
+          </div>
+          <div class="badge" id="ctxState">AudioContext: —</div>
+        </div>
+
+        <div style="height:8px"></div>
+        <div class="row">
+          <label for="mics">麦克风</label>
+          <select id="mics"></select>
+        </div>
+
+        <div class="row" style="gap:16px;margin-top:8px">
+          <div style="flex:1;min-width:140px">
+            <label>平滑 (smoothing) <span id="smoothingVal" class="badge">0.50</span></label>
+            <input class="slider" id="smoothing" type="range" min="0" max="0.95" step="0.01" value="0.5" />
+          </div>
+          <div style="flex:1;min-width:140px">
+            <label>增益 (gain) <span id="gainVal" class="badge">1.0</span></label>
+            <input class="slider" id="gain" type="range" min="0.1" max="3" step="0.1" value="1" />
+          </div>
+          <!-- 新增：仅影响“显示”的波形缩放（不改变音频管线） -->
+          <div style="flex:1;min-width:140px">
+            <label>波形缩放 (scope) <span id="scopeVal" class="badge">1.00×</span></label>
+            <input class="slider" id="scope" type="range" min="0.25" max="100" step="0.25" value="50" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="recorderCard">
+        <div class="row" style="justify-content:space-between">
+          <strong>录音</strong>
+          <span class="hint" id="recHint">使用 MediaRecorder（部分旧版 iOS 不支持）</span>
+        </div>
+        <div class="row" style="margin-top:8px;gap:8px">
+          <button id="recBtn" class="secondary" disabled>开始录音</button>
+          <button id="recStopBtn" class="danger" disabled>停止并保存</button>
+          <a id="dl" class="pill" href="#" download style="display:none">下载</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <ul class="hint" style="margin:0 0 0 18px">
+          <li>若无法列出设备，直接“开始”将使用默认麦克风（iOS 通常不支持切换设备）。</li>
+          <li>已关闭回声消除/降噪/自动增益以获得更原始的波形。</li>
+          <li>iOS 12 及更早版本可能仅支持旧接口，已自动降级；若仍失败，请升级系统或改用 Safari/系统浏览器。</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="footer">© <span id="year"></span> Wave Demo</div>
+  </div>
+
+<script>
+(function(){
+  // ===== Polyfill: 旧版浏览器的 getUserMedia =====
+  (function ensureGetUserMedia(){
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          console.log("麦克风采集成功", stream);
+        })
+        .catch(err => {
+          console.error("麦克风采集失败:", err);
+        });
+    } else {
+      console.error("该浏览器不支持麦克风采集");
+    }
+
+  })();
+
+  const dpr = window.devicePixelRatio || 1;
+  const wave = document.getElementById('wave');
+  const spec = document.getElementById('spectrum');
+  const toggleBtn = document.getElementById('toggle');
+  const reenumBtn = document.getElementById('reenum');
+  const micsSel = document.getElementById('mics');
+  const smoothingInp = document.getElementById('smoothing');
+  const gainInp = document.getElementById('gain');
+  const smoothingVal = document.getElementById('smoothingVal');
+  const gainVal = document.getElementById('gainVal');
+  const scopeInp = document.getElementById('scope');           // 新增
+  const scopeVal = document.getElementById('scopeVal');         // 新增
+  const srEl = document.getElementById('sr');
+  const peakEl = document.getElementById('peak');
+  const ctxState = document.getElementById('ctxState');
+  const yearEl = document.getElementById('year');
+  const supportHint = document.getElementById('supportHint');
+  yearEl.textContent = new Date().getFullYear();
+
+  const recBtn = document.getElementById('recBtn');
+  const recStopBtn = document.getElementById('recStopBtn');
+  const dl = document.getElementById('dl');
+  const recHint = document.getElementById('recHint');
+
+  let ac = null, analyser = null, gainNode = null, src = null, stream = null, raf = null;
+
+  // —— 环形缓冲（历史波形），默认 10 秒 —— 可按需改短为 3~5 秒
+  let windowSec = 30;
+  let ring = null, ringLen = 0, writeIdx = 0, totalWritten = 0, tdFloat = null;
+
+  // 基础环境提示
+  const isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  if (!isSecure) {
+    supportHint.textContent = '⚠️ 非安全环境：请使用 HTTPS 或 localhost。';
+  }
+
+  function resizeCanvas(c){
+    const parent = c.parentElement; if(!parent) return;
+    const w = parent.clientWidth; const h = Math.max(160, Math.floor(w*0.4));
+    c.style.width = w+'px'; c.style.height = h+'px';
+    c.width = Math.floor(w*dpr); c.height = Math.floor(h*dpr);
+  }
+  const onResize = ()=>{resizeCanvas(wave); resizeCanvas(spec)};
+  window.addEventListener('resize', onResize);
+  onResize();
+
+  async function enumerate(){
+    // 某些旧版 iOS 没有 enumerateDevices：直接给一个默认项
+    if (!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)) {
+      micsSel.innerHTML = '<option value="">默认麦克风（设备切换不可用）</option>';
+      return;
+    }
+    try{
+      // 先触发一次权限以拿到设备标签（iOS 下不一定有效）
+      const tmp = await navigator.mediaDevices.getUserMedia({audio:true});
+      tmp.getTracks().forEach(t=>t.stop());
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const mics = list.filter(d=>d.kind==='audioinput');
+      micsSel.innerHTML = '';
+      if(mics.length===0){
+        const opt=document.createElement('option'); opt.value=''; opt.textContent='默认麦克风（未列出设备）'; micsSel.appendChild(opt);
+      }else{
+        mics.forEach((d,i)=>{
+          const opt=document.createElement('option'); opt.value=d.deviceId||''; opt.textContent=d.label||`麦克风 ${i+1}`; micsSel.appendChild(opt);
+        });
+      }
+    }catch(e){
+      micsSel.innerHTML='<option value="">默认麦克风</option>';
+    }
+  }
+  enumerate();
+
+  async function start(){
+    // 运行前检查基本支持
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('当前浏览器不支持或未启用麦克风采集（缺少 navigator.mediaDevices.getUserMedia）。请升级系统/浏览器，或改用 Safari/系统浏览器。');
+      return;
+    }
+
+    toggleBtn.disabled = true;
+    try{
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) {
+        throw new Error('此浏览器不支持 Web Audio API（缺少 AudioContext）。');
+      }
+
+      ac = new AudioCtx();
+      if(ac.state==='suspended') await ac.resume();
+      ctxState.textContent='AudioContext: '+ac.state;
+      ac.onstatechange = ()=>{ctxState.textContent='AudioContext: '+ac.state};
+
+      // iOS/旧版对约束支持有限：先从最简单的 {audio:true} 开始，再尝试带参数
+      const baseConstraints = { audio: true };
+      let constraints = baseConstraints;
+
+      // 如果环境支持设备选择（多数桌面/安卓），再加 deviceId 与关闭处理的选项
+      const canSelectDevice = !!(micsSel && micsSel.value && micsSel.value !== '');
+      if (canSelectDevice) {
+        constraints = {
+          audio: {
+            deviceId: { exact: micsSel.value },
+            echoCancellation:false, noiseSuppression:false, autoGainControl:false
+          }
+        };
+      } else {
+        // 关闭处理项（旧版可能忽略）
+        constraints = { audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false } };
+      }
+
+      // 有些旧 iOS 对带约束不兼容：失败时退回最朴素的 {audio:true}
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        stream = await navigator.mediaDevices.getUserMedia(baseConstraints);
+      }
+
+      src = ac.createMediaStreamSource(stream);
+
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = parseFloat(smoothingInp.value);
+
+      gainNode = ac.createGain();
+      gainNode.gain.value = parseFloat(gainInp.value);
+
+      src.connect(gainNode).connect(analyser);
+
+      srEl.textContent = '采样率: ' + ac.sampleRate + ' Hz';
+
+      // 初始化环形缓冲
+      ringLen = Math.ceil(ac.sampleRate * windowSec * 1.2);
+      ring = new Float32Array(ringLen);
+      writeIdx = 0; totalWritten = 0;
+      tdFloat = new Float32Array(analyser.fftSize);
+      const fd = new Uint8Array(analyser.frequencyBinCount);
+
+      function draw(){
+        const wctx = wave.getContext('2d');
+        const sctx = spec.getContext('2d');
+        const W = wave.width, H = wave.height, SW = spec.width, SH = spec.height;
+
+        // 线宽跟随 DPR，更清晰
+        wctx.lineWidth = Math.max(1, dpr);
+
+        // 背景与中线
+        wctx.clearRect(0,0,W,H);
+        wctx.fillStyle = '#0b1220'; wctx.fillRect(0,0,W,H);
+        wctx.strokeStyle = '#1f2a44'; wctx.beginPath(); wctx.moveTo(0,H/2); wctx.lineTo(W,H/2); wctx.stroke();
+
+        // 收集一帧
+        analyser.getFloatTimeDomainData(tdFloat);
+        let pk = 0;
+        for (let i = 0; i < tdFloat.length; i++) {
+          const v = tdFloat[i];
+          ring[writeIdx] = v;
+          writeIdx = (writeIdx + 1) % ringLen;
+          totalWritten++;
+          if (Math.abs(v) > pk) pk = Math.abs(v);
+        }
+        peakEl.textContent = '峰值: ' + Math.min(100, Math.round(pk * 100)) + '%';
+
+        // 固定目标窗口（N 秒）对应的样本数
+        const targetSamples = Math.floor(ac.sampleRate * windowSec);
+        // 目前实际可用的样本数
+        const available = Math.min(totalWritten, targetSamples);
+
+        // 列宽基于“目标窗口”而非“目前可用”——这样窗口感稳定
+        const stride = Math.max(1, Math.floor(targetSamples / W));
+
+        // 从环形缓冲中，截取“最后 available 个样本”作为可见数据
+        let startIdx = (writeIdx - available + ringLen) % ringLen;
+
+        // 计算把可见数据“右对齐”后的起绘列：左侧空白直到 offsetX-1
+        const visibleCols = Math.max(1, Math.floor(available / stride));
+        const offsetX = W - visibleCols;
+
+        // 显示缩放（仅影响可视化）
+        const scope = scopeInp ? parseFloat(scopeInp.value) : 1;
+
+        wctx.strokeStyle = '#60a5fa';
+        wctx.beginPath();
+
+        // 先把左侧空白区清掉（可选，通常前面清全屏已足够）
+        /*
+        wctx.clearRect(0, 0, offsetX, H);
+        wctx.fillStyle = '#0b1220';
+        wctx.fillRect(0, 0, offsetX, H);
+        */
+
+        // 只在 [offsetX, W) 范围内绘制真实数据列，右侧贴边，视觉上就是从右向左推进
+        for (let x = offsetX; x < W; x++) {
+          let min =  1, max = -1;
+          // 取这一列对应的若干样本，求 min/max（竖条）
+          for (let k = 0; k < stride; k++) {
+            // 注意列到样本的映射从 “startIdx + (x - offsetX) * stride” 开始
+            const idx = (startIdx + (x - offsetX) * stride + k) % ringLen;
+            let v = ring[idx] * scope;         // 可视缩放
+            if (v >  1) v =  1;                // 夹紧，避免越界
+            if (v < -1) v = -1;
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+          const y1 = (1 - (max + 1) / 2) * H;
+          const y2 = (1 - (min + 1) / 2) * H;
+          wctx.moveTo(x, y1);
+          wctx.lineTo(x, y2);
+        }
+        wctx.stroke();
+
+
+        // 频谱（瞬时）
+        analyser.getByteFrequencyData(fd);
+        sctx.clearRect(0,0,SW,SH);
+        sctx.fillStyle = '#0b1220'; sctx.fillRect(0,0,SW,SH);
+        const bw = Math.max(1, Math.floor(SW / fd.length));
+        sctx.fillStyle = '#22d3ee';
+        for (let i = 0; i < fd.length; i++) {
+          const v = fd[i] / 255;
+          const h = v * SH;
+          sctx.fillRect(i * bw, SH - h, bw - 1, h);
+        }
+
+        raf = requestAnimationFrame(draw);
+      }
+
+      raf = requestAnimationFrame(draw);
+      toggleBtn.textContent = '停止';
+
+      // 录音能力检测
+      if ('MediaRecorder' in window) {
+        recBtn.disabled = false; recStopBtn.disabled = true;
+        recHint.textContent = '使用 MediaRecorder';
+        let mediaRecorder = null; let chunks = [];
+        recBtn.onclick = () => {
+          try{
+            mediaRecorder = new MediaRecorder(stream);
+            chunks = [];
+            mediaRecorder.ondataavailable = e => { if(e.data.size>0) chunks.push(e.data); };
+            mediaRecorder.onstop = () => {
+              const blob = new Blob(chunks, {type: mediaRecorder.mimeType || 'audio/webm'});
+              const url = URL.createObjectURL(blob);
+              dl.href = url;
+              const ts = new Date().toISOString().replace(/[:.]/g,'-');
+              dl.download = `record-${ts}.webm`;
+              dl.style.display = 'inline-block';
+            };
+            mediaRecorder.start();
+            recBtn.disabled = true; recStopBtn.disabled = false; dl.style.display = 'none';
+          }catch(err){ alert('录音启动失败：' + (err.message || err)); }
+        };
+        recStopBtn.onclick = () => {
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+            recBtn.disabled = false; recStopBtn.disabled = true;
+          }
+        };
+      } else {
+        recHint.textContent = '当前环境不支持 MediaRecorder（iOS 老版本常见）';
+      }
+
+    }catch(e){
+      alert((e && e.message) ? e.message :
+            '启动失败，可能是未授权麦克风、非 HTTPS、或浏览器不兼容。');
+      stop();
+    }finally{
+      toggleBtn.disabled = false;
+    }
+  }
+
+  async function stop(){
+    cancelAnimationFrame(raf); raf = null;
+    try{ if (gainNode) gainNode.disconnect(); }catch(_){}
+    try{ if (analyser) analyser.disconnect(); }catch(_){}
+    try{ if (src) src.disconnect(); }catch(_){}
+    try{ if (stream){ stream.getTracks().forEach(t=>t.stop()); } }catch(_){}
+    try{ if (ac){ await ac.close(); } }catch(_){}
+    ac = null; analyser = null; gainNode = null; src = null; stream = null;
+
+    ctxState.textContent='AudioContext: —';
+    toggleBtn.textContent='开始';
+    recBtn.disabled = true; recStopBtn.disabled = true;
+  }
+
+  toggleBtn.addEventListener('click',()=>{ if(ac) stop(); else start(); });
+  reenumBtn.addEventListener('click',enumerate);
+
+  smoothingInp.addEventListener('input',()=>{
+    const v = parseFloat(smoothingInp.value);
+    smoothingVal.textContent = v.toFixed(2);
+    if(analyser) analyser.smoothingTimeConstant = v;
+  });
+  gainInp.addEventListener('input',()=>{
+    const v = parseFloat(gainInp.value);
+    gainVal.textContent = v.toFixed(1);
+    if(gainNode) gainNode.gain.value = v;
+  });
+  // 新增：波形缩放显示
+  scopeInp && scopeInp.addEventListener('input', () => {
+    const v = parseFloat(scopeInp.value);
+    scopeVal.textContent = v.toFixed(2) + '×';
+  });
+})();
+</script>
+</body>
+</html>
