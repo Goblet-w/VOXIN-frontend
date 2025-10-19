@@ -56,6 +56,7 @@
             <button id="toggle">开始</button>
             <button class="secondary" id="reenum">刷新设备</button>
           </div>
+          <div class="badge" id="ctxState"></div>
         </div>
 
         <div style="height:8px"></div>
@@ -209,8 +210,8 @@
 
       ac = new AudioCtx();
       if(ac.state==='suspended') await ac.resume();
-      ctxState.textContent='AudioContext: '+ac.state;
-      ac.onstatechange = ()=>{ctxState.textContent='AudioContext: '+ac.state};
+      ctxState.textContent=ac.state;
+      ac.onstatechange = ()=>{ctxState.textContent=ac.state};
 
       // iOS/旧版对约束支持有限：先从最简单的 {audio:true} 开始，再尝试带参数
       const baseConstraints = { audio: true };
