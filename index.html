@@ -294,63 +294,86 @@
 
   // ===== 估计 Jitter/Shimmer（基于最近1秒，简化法） =====
   function estimateMetrics(rbuf, writeIdx, sr){
-    const secs = 1.0; // 最近 1 秒
+    const secs = 1.0;
     const N = Math.min(rbuf.length, Math.floor(sr * secs));
     if (N < 1024) return { jitterP: 0, shimmerP: 0, ok:false };
 
+    // 拷贝最近 N 个样本并算 RMS
     const buf = new Float32Array(N);
-    // 拷贝最近 N 个样本
     let start = (writeIdx - N + rbuf.length) % rbuf.length;
-    for (let i=0; i<N; i++){
-      buf[i] = rbuf[(start + i) % rbuf.length];
+    let rms2 = 0;
+    for (let i = 0; i < N; i++){
+      const v = rbuf[(start + i) % rbuf.length];
+      buf[i] = v; rms2 += v*v;
+    }
+    const rms = Math.sqrt(rms2 / N);
+
+    // 能量门限：把原来的 1e-4 改成更宽松（典型人声 rms ~ 0.02~0.2）
+    if (rms < 0.002) return { jitterP: 0, shimmerP: 0, ok:false };
+
+    // —— 自适应舒密特过零 —— //
+    // 阈值随 RMS 走：说话小声也能触发；大声不会误检太多
+    const thr    = Math.max(0.003, rms * 0.6);
+    const relThr = thr * 0.35;
+
+    let above = false;
+    let zc = [];
+    for (let i = 1; i < N; i++){
+      if (!above && buf[i-1] < -relThr && buf[i] >=  thr) { above = true;  zc.push(i); }
+      if ( above && buf[i]    <  relThr)                    { above = false; }
     }
 
-    // 过零（负->正）作为周期边界
-    const zeroIdx = [];
-    for (let i=1; i<N; i++){
-      if (buf[i-1] < 0 && buf[i] >= 0) zeroIdx.push(i);
-    }
-    if (zeroIdx.length < 4) return { jitterP: 0, shimmerP: 0, ok:false };
-
-    // 周期样本数
-    const periods = [];
-    // 每周期峰-峰振幅近似（max(|x|)）
-    const cycleAmps = [];
-
-    for (let k=1; k<zeroIdx.length; k++){
-      const a = zeroIdx[k-1], b = zeroIdx[k];
-      const len = b - a;
-      if (len <= 2) continue;
-      periods.push(len);
-
-      // 周期内振幅
-      let maxAbs = 0;
-      for (let i=a; i<b; i++){
-        const av = Math.abs(buf[i]);
-        if (av > maxAbs) maxAbs = av;
+    // 回退策略：如果自适应舒密特太严格，就退回普通过零
+    if (zc.length < 4){
+      zc = [];
+      for (let i = 1; i < N; i++){
+        if (buf[i-1] < 0 && buf[i] >= 0) zc.push(i);
       }
-      cycleAmps.push(maxAbs + 1e-9);
+    }
+    if (zc.length < 6) return { jitterP: 0, shimmerP: 0, ok:false };
+
+    // 允许更宽的基音范围（50–500 Hz），增强鲁棒性
+    const minSamp = Math.floor(sr / 500);
+    const maxSamp = Math.ceil (sr / 50);
+
+    const periods = [];
+    const amps = [];
+
+    for (let k = 1; k < zc.length; k++){
+      const a = zc[k-1], b = zc[k];
+      const L = b - a;
+      if (L < minSamp || L > maxSamp) continue;
+
+      periods.push(L);
+
+      // 周期振幅（峰-峰），避免 0
+      let maxV = -1e9, minV = 1e9;
+      for (let i = a; i < b; i++){ const v = buf[i]; if (v > maxV) maxV = v; if (v < minV) minV = v; }
+      amps.push(Math.max(1e-9, maxV - minV));
     }
 
-    if (periods.length < 3 || cycleAmps.length < 3){
-      return { jitterP: 0, shimmerP: 0, ok:false };
-    }
+    if (periods.length < 4) return { jitterP: 0, shimmerP: 0, ok:false };
 
     const mean = arr => arr.reduce((s,v)=>s+v,0)/arr.length;
     const mP = mean(periods);
-    const mA = mean(cycleAmps);
-    const std = (arr,m)=>Math.sqrt(arr.reduce((s,v)=>s+(v-m)*(v-m),0)/arr.length);
+    const mA = mean(amps);
 
-    const jLocal = std(periods, mP) / mP;          // 相对周期偏差
-    const sLocal = std(cycleAmps, mA) / mA;        // 相对振幅偏差
+    // Praat 风格：相邻差的平均 / 均值
+    let sumDP = 0, sumDA = 0;
+    for (let i = 1; i < periods.length; i++) sumDP += Math.abs(periods[i] - periods[i-1]);
+    for (let i = 1; i < amps.length;    i++) sumDA += Math.abs(amps[i]    - amps[i-1]);
 
-    // 百分数（限制上限用于表盘显示）
+    const jLocal = (sumDP / (periods.length - 1)) / mP;
+    const sLocal = (sumDA / (amps.length    - 1)) / mA;
+
     return {
-      jitterP: Math.min(10, Math.max(0, jLocal * 100)),
-      shimmerP: Math.min(10, Math.max(0, sLocal * 100)),
+      jitterP: Math.max(0, Math.min(50, jLocal * 100)),
+      shimmerP: Math.max(0, Math.min(50, sLocal * 100)),
       ok: true
     };
   }
+
+
 
   // ===== 圆环绘制 =====
   function drawRing(canvas, value, label, color){
@@ -371,7 +394,7 @@
     ctx.stroke();
 
     // 数值环（0~30%映射到 270°）
-    const maxP = 30; // 经验上限，避免一发散就铺满
+    const maxP = 50; // 经验上限，避免一发散就铺满
     const ratio = Math.max(0, Math.min(1, value / maxP));
     const start = -Math.PI*0.75;
     const end = start + ratio * (Math.PI*1.5);
@@ -509,9 +532,8 @@
 
         // === 估计 Jitter & Shimmer，并绘制两个圆环 ===
         const { jitterP, shimmerP, ok } = estimateMetrics(ring, writeIdx, ac.sampleRate);
-
         // 简单平滑（EWMA）避免跳动
-        const alpha = 0.2;
+        const alpha = 0.8;
         if (ok){
           state.ewmaJ = alpha * jitterP + (1-alpha) * (state.ewmaJ || jitterP);
           state.ewmaS = alpha * shimmerP + (1-alpha) * (state.ewmaS || shimmerP);
