@@ -533,7 +533,7 @@
         // === 估计 Jitter & Shimmer，并绘制两个圆环 ===
         const { jitterP, shimmerP, ok } = estimateMetrics(ring, writeIdx, ac.sampleRate);
         // 简单平滑（EWMA）避免跳动
-        const alpha = 0.5;
+        const alpha = 0.8;
         if (ok){
           state.ewmaJ = alpha * jitterP + (1-alpha) * (state.ewmaJ || jitterP);
           state.ewmaS = alpha * shimmerP + (1-alpha) * (state.ewmaS || shimmerP);
