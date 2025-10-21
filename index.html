@@ -553,27 +553,69 @@
 
       // 录音能力
       if ('MediaRecorder' in window) {
-        let chunks = [];
-        try{
-          mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' }, { bitsPerSecond: 128000 });
-          chunks = [];
-          mediaRecorder.ondataavailable = e => { if(e.data.size>0) chunks.push(e.data); };
+        let options = {};
+
+        // 检测支持的 MIME 类型（iOS 可能不支持 audio/webm）
+        const mimeTypes = [
+          'audio/webm',
+          'audio/mp4',
+          'audio/mpeg',
+          'audio/wav',
+          'audio/ogg',
+          'audio/x-m4a'
+        ];
+
+        // 找到第一个支持的 MIME 类型
+        for (let mimeType of mimeTypes) {
+          if (MediaRecorder.isTypeSupported(mimeType)) {
+            options.mimeType = mimeType;
+            break;
+          }
+        }
+
+        // 如果没有找到支持的格式，让 MediaRecorder 使用默认格式
+        try {
+          mediaRecorder = new MediaRecorder(stream, options);
+          console.log('使用 MediaRecorder，MIME 类型:', options.mimeType || '默认');
+          
+          let chunks = [];
+          mediaRecorder.ondataavailable = e => { 
+            if(e.data.size > 0) chunks.push(e.data); 
+          };
+          
           mediaRecorder.onstop = () => {
-            if (!chunks.length) {
+            if (chunks.length === 0) {
+              console.log('没有录音数据');
               showModal();
               return;
             }
+            
             const mime = mediaRecorder.mimeType || 'audio/webm';
             const blob = new Blob(chunks, {type: mime});
             const ts = new Date().toISOString().replace(/[:.]/g,'-');
-            const filename = `record-${ts}.${mime.includes('webm') ? 'webm' : mime.split('/')[1] || 'dat'}`;
+            
+            // 根据 MIME 类型确定文件扩展名
+            let extension = 'webm';
+            if (mime.includes('mp4') || mime.includes('m4a')) extension = 'm4a';
+            else if (mime.includes('mpeg')) extension = 'mp3';
+            else if (mime.includes('wav')) extension = 'wav';
+            else if (mime.includes('ogg')) extension = 'ogg';
+            
+            const filename = `record-${ts}.${extension}`;
             lastRecording = { blob, mime, filename };
             showModal();
           };
+          
           mediaRecorder.start();
-        }catch(err){ alert('录音启动失败：' + (err.message || err)); }
+          
+        } catch (err) {
+          console.error('MediaRecorder 创建失败:', err);
+          // 降级处理：不使用录音功能
+          mediaRecorder = null;
+        }
       } else {
-        console.log('当前环境不支持 MediaRecorder（iOS 老版本常见）');
+        console.log('当前环境不支持 MediaRecorder');
+        mediaRecorder = null;
       }
 
     }catch(e){
@@ -621,7 +663,7 @@
   btnDownload.addEventListener('click', () => {
     if (!lastRecording) { alert('没有可下载的录音。'); return; }
     if (!filenameInput.value.trim()) { alert('请输入文件名。'); return; }
-    const input_filename = `${filenameInput.value.trim()}_${getTimestamp()}.webm`;
+    const input_filename = `${filenameInput.value.trim()}.${lastRecording.filename.split('.').pop()}`;
 
     const { blob } = lastRecording;
     const url = URL.createObjectURL(blob);
@@ -639,7 +681,7 @@
     try{
       if (!lastRecording) { alert('没有可上传的录音。'); return; }
       if (!filenameInput.value.trim()) { alert('请输入文件名。'); return; }
-      const input_filename = `${filenameInput.value.trim()}_${getTimestamp()}.webm`;
+      const input_filename = `${filenameInput.value.trim()}.${lastRecording.filename.split('.').pop()}`;
 
       uploadStatus.textContent = '正在上传…';
       const ENDPOINT = 'https://43.136.55.43/api/upload';
