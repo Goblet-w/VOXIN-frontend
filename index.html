@@ -694,7 +694,9 @@
       const fd = new FormData();
       fd.append('file', blob, input_filename);
       fd.append('mime', mime);
-      const res = await fetch(ENDPOINT, { method:'POST', body: fd });
+      const res = await fetch(ENDPOINT, { method:'POST', body: fd, credentials: 'include', headers: {
+        'Accept': 'application/json',
+      } });
       if (!res.ok) throw new Error('上传失败，状态码：' + res.status);
       const text = await res.text().catch(()=> '');
       console.log('上传响应:', text);
