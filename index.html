@@ -554,64 +554,63 @@
 
       // 录音能力
       if ('MediaRecorder' in window) {
-          let options = {};
-          const preferredTypes = [
-              'audio/webm;codecs=opus',
-              'audio/mp4',
-              'audio/wav',
-              'audio/mpeg'
-          ];
-          
-          // 找到第一个支持的 MIME 类型
-          for (let mimeType of preferredTypes) {
-              if (MediaRecorder.isTypeSupported(mimeType)) {
-                  options.mimeType = mimeType;
-                  break;
-              }
-          }
+        let options = {};
+        // 1) 先把 iOS Safari 常用的 AAC in MP4 放到最前（保存 .m4a）
+        // 2) 再给一些 Safari 技术预览 / 其它浏览器可能支持的备选
+        const candidates = [
+          'audio/mp4;codecs=mp4a.40.2', // iOS Safari 首选：AAC in MP4（.m4a）
+          'audio/mp4',                  // 次选（多数也会是 AAC）
+          'audio/wav',                  // 新版 Safari TP 可能支持
+          'audio/webm;codecs=opus',     // Chrome/Edge/Firefox 常用
+          'audio/webm',
+          'audio/mpeg'                  // 部分浏览器（通常走 MP3）
+        ];
 
+        for (const t of candidates) {
           try {
-              mediaRecorder = new MediaRecorder(stream, options);
-              console.log('使用 MediaRecorder，MIME 类型:', options.mimeType || '默认');
-              
-              let chunks = [];
-              mediaRecorder.ondataavailable = e => { 
-                  console.log('收到数据块:', e.data.size, 'bytes');
-                  if(e.data.size > 0) chunks.push(e.data); 
-              };
-              
-              mediaRecorder.onstop = () => {
-                  console.log('录音停止，总块数:', chunks.length);
-                  if (chunks.length === 0) {
-                      console.log('没有录音数据');
-                      showModal();
-                      return;
-                  }
-                  
-                  const mime = mediaRecorder.mimeType || 'audio/webm';
-                  const blob = new Blob(chunks, {type: mime});
-                  const ts = new Date().toISOString().replace(/[:.]/g,'-');
-                  
-                  // 根据 MIME 类型确定文件扩展名
-                  let extension = 'webm';
-                  if (mime.includes('mp4') || mime.includes('m4a')) extension = 'm4a';
-                  else if (mime.includes('mpeg')) extension = 'mp3';
-                  else if (mime.includes('wav')) extension = 'wav';
-                  else if (mime.includes('ogg')) extension = 'ogg';
-                  
-                  const filename = `record-${ts}.${extension}`;
-                  lastRecording = { blob, mime, filename };
-                  showModal();
-              };
-              
-              // 添加 timeslice 参数（100ms）确保定期获取数据
-              mediaRecorder.start(100);
-              
-          } catch (err) {
-              console.error('MediaRecorder 创建失败:', err);
-              // 降级处理：不使用录音功能
-              mediaRecorder = null;
-          }
+            if (MediaRecorder.isTypeSupported(t)) { options.mimeType = t; break; }
+          } catch(_) {}
+        }
+
+        try {
+          const timesliceMs = 100; // 定时出块，避免某些实现只在 stop 时吐数据
+          mediaRecorder = new MediaRecorder(stream, options);
+          console.log('使用 MediaRecorder，MIME:', mediaRecorder.mimeType || options.mimeType || '(browser default)');
+
+          let chunks = [];
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) chunks.push(e.data);
+          };
+
+          mediaRecorder.onstop = () => {
+            if (chunks.length === 0) {
+              console.warn('没有录音数据块');
+              showModal();
+              return;
+            }
+
+            const mime = mediaRecorder.mimeType || options.mimeType || 'application/octet-stream';
+            const blob = new Blob(chunks, { type: mime });
+            const ts = new Date().toISOString().replace(/[:.]/g,'-');
+
+            // 根据实际 MIME 决定扩展名（关键：audio/mp4 -> .m4a）
+            let ext = 'bin';
+            if (mime.includes('audio/mp4'))       ext = 'm4a';
+            else if (mime.includes('audio/webm')) ext = 'webm';
+            else if (mime.includes('audio/wav'))  ext = 'wav';
+            else if (mime.includes('mpeg'))       ext = 'mp3';
+            else if (mime.includes('ogg'))        ext = 'ogg';
+
+            const filename = `record-${ts}.${ext}`;
+            lastRecording = { blob, mime, filename };
+            showModal();
+          };
+
+          mediaRecorder.start(timesliceMs);
+        } catch (err) {
+          console.error('MediaRecorder 创建失败:', err);
+          mediaRecorder = null; // 降级：不启用录音
+        }
       }
 
     }catch(e){
@@ -690,7 +689,7 @@
       const input_filename = `${filenameInput.value.trim()}.${lastRecording.filename.split('.').pop()}`;
 
       uploadStatus.textContent = '正在上传…';
-      const ENDPOINT = 'https://43.136.55.43/api/upload';
+      const ENDPOINT = 'https://www.iloveyouso.top/api/upload';
       const { blob, mime } = lastRecording;
       const fd = new FormData();
       fd.append('file', blob, input_filename);
