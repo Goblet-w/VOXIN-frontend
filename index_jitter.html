@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>VOXIN · 浅色版</title>
+  <title>VOXIN · 浅色版（Jitter 实时版 · 连续波形）</title>
   <style>
     :root{
       --bg:#ffffff;          /* 页面背景 */
@@ -12,7 +12,7 @@
       --text:#0f172a;        /* 主文字 */
       --muted:#475569;       /* 次级文字 */
       --accent:#2563eb;      /* 主按钮/高亮 */
-      --accent2:#06b6d4;     /* 频谱色（已用于圆环右侧） */
+      --accent2:#06b6d4;     /* 频谱色 */
       --danger:#ef4444;      /* 危险色 */
     }
     *{box-sizing:border-box}
@@ -37,8 +37,7 @@
     canvas{display:block;width:100%;height:200px;border-radius:12px;background:#f1f5f9;border:1px solid var(--soft)}
     .badge{font-size:12px;color:#334155}
     .footer{font-size:12px;color:#64748b;text-align:center;margin-top:16px}
-    @media (min-width:720px){canvas#wave{height:260px}}
-
+    @media (min-width:720px){canvas{height:260px}}
     /* 焦点可见性 */
     button:focus,select:focus,input:focus{outline:3px solid rgba(37,99,235,.35);outline-offset:2px}
 
@@ -48,39 +47,6 @@
     .modal-card{width:100%;max-width:460px;background:var(--card);border:1px solid var(--soft);border-radius:16px;box-shadow:0 10px 30px rgba(15,23,42,.2);padding:16px}
     .modal-card h3{margin:4px 0 6px;font-size:18px}
     .modal-card p{margin:0 0 10px;color:var(--muted)}
-
-    /* —— 新：双圆环容器（替换原谱图位置） —— */
-    .ring-wrap{
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:12px;
-      align-items:stretch;
-    }
-    .ring{
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      background:#f1f5f9;
-      border:1px solid var(--soft);
-      border-radius:12px;
-      /* 用正方形比例避免横向拉伸 */
-      aspect-ratio: 1 / 1;
-      width: 100%;
-      /* 可选最小高度，避免太小 */
-      min-height: 180px;
-    }
-
-    /* 关键点：不要用 100%/100% 拉 canvas！ */
-    .ring canvas{
-      background:transparent;
-      border:none;
-      border-radius:12px;
-      /* 让尺寸交给 JS 来设定 */
-      width:auto;
-      height:auto;
-      display:block;
-    }
-
   </style>
 </head>
 <body>
@@ -95,16 +61,12 @@
     <section class="card" id="displayCard">
       <div class="row" style="justify-content:space-between;margin-bottom:8px">
         <span class="badge" id="sr">采样率: —</span>
-        <span class="pill" id="peak">峰值: 0%</span>
+        <span class="pill" id="peak">jitter_local_percent: —</span>
       </div>
-      <canvas id="wave"></canvas>
-
-      <!-- ▼▼▼ 替换掉原先的 spectrum：双圆环 ▼▼▼ -->
-      <div class="ring-wrap" style="margin-top:12px">
-        <div class="ring"><canvas id="ringJitter" aria-label="jitter_local_percent"></canvas></div>
-        <div class="ring"><canvas id="ringShimmer" aria-label="shimmer_local_percent"></canvas></div>
-      </div>
-      <!-- ▲▲▲ 替换结束 ▲▲▲ -->
+      <!-- 用 Jitter 曲线替代原始波形（连续模式：静音也缓慢滑动） -->
+      <canvas id="jitter" aria-label="Jitter(%) 实时曲线"></canvas>
+      <div style="height:10px"></div>
+      <canvas id="spectrum" aria-label="频谱图"></canvas>
     </section>
 
     <section class="grid" style="margin-top:12px">
@@ -132,9 +94,10 @@
             <label>增益 (gain) <span id="gainVal" class="badge">1.0</span></label>
             <input class="slider" id="gain" type="range" min="0.1" max="3" step="0.1" value="1" />
           </div>
+          <!-- 控制 “Jitter 视窗上限(%)”，默认 10% -->
           <div style="flex:1;min-width:140px">
-            <label>波形缩放 (scope) <span id="scopeVal" class="badge">1.00×</span></label>
-            <input class="slider" id="scope" type="range" min="0.25" max="100" step="0.25" value="50" />
+            <label>Jitter 视窗上限 (%) <span id="scopeVal" class="badge">10.00%</span></label>
+            <input class="slider" id="scope" type="range" min="5" max="20" step="0.5" value="10" />
           </div>
         </div>
       </div>
@@ -161,7 +124,7 @@
 
 <script>
 (function(){
-  // ===== Polyfill: 旧版浏览器的 getUserMedia =====
+  // ===== Polyfill: 旧版浏览器的 getUserMedia 试探 =====
   (function ensureGetUserMedia(){
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices.getUserMedia({ audio: true })
@@ -173,9 +136,8 @@
   })();
 
   const dpr = window.devicePixelRatio || 1;
-  const wave = document.getElementById('wave');
-  const ringJitter = document.getElementById('ringJitter');
-  const ringShimmer = document.getElementById('ringShimmer');
+  const jitterCanvas = document.getElementById('jitter');
+  const spec = document.getElementById('spectrum');
   const toggleBtn = document.getElementById('toggle');
   const reenumBtn = document.getElementById('reenum');
   const micsSel = document.getElementById('mics');
@@ -186,7 +148,7 @@
   const scopeInp = document.getElementById('scope');
   const scopeVal = document.getElementById('scopeVal');
   const srEl = document.getElementById('sr');
-  const peakEl = document.getElementById('peak');
+  const peakEl = document.getElementById('peak'); // 复用为 jitter 显示
   const ctxState = document.getElementById('ctxState');
   const yearEl = document.getElementById('year');
   const supportHint = document.getElementById('supportHint');
@@ -199,23 +161,26 @@
   const uploadStatus = document.getElementById('uploadStatus');
   const filenameInput = document.getElementById('filenameInput');
 
-  // —— 录音器 —— 
+  // —— 录音器 & 音频节点 —— 
   let mediaRecorder = null;
   let lastRecording = null; // { blob, mime, filename }
 
   let ac = null, analyser = null, gainNode = null, src = null, stream = null, raf = null;
 
-  // —— 环形缓冲（历史波形），默认 30 秒 —— 
-  let windowSec = 30;
-  let ring = null, ringLen = 0, writeIdx = 0, totalWritten = 0, tdFloat = null;
+  // —— 频谱保留（峰值缓降，静音也保持顺滑）——
+  let specHold = null; // Uint8Array
 
-  // —— 圆环状态 —— 
-  const state = {
-    jitterPercent: 0,   // 0-?
-    shimmerPercent: 0,  // 0-?
-    ewmaJ: 0,
-    ewmaS: 0
-  };
+  // —— Jitter 状态 —— 
+  let prevPeriodSec = null;             // 上一估计周期（秒）
+  let jitterHistory = [];               // 历史（百分比值）
+  const JITTER_HISTORY_LEN = 600;       // ~10s 轨迹（60FPS 近似）
+
+  // —— 静音检测 & 连续绘制参数 ——
+  function rms(arr){ let s=0; for(let i=0;i<arr.length;i++) s+=arr[i]*arr[i]; return Math.sqrt(s/arr.length); }
+  const SILENCE_RMS = 0.01;      // 约 -40dB，按设备可调 0.005~0.02
+  const JITTER_DECAY = 0.94;     // 静音时向 0% 衰减系数（0.9 更快，0.98 更慢）
+  const JITTER_STEP  = 0.02;     // 每帧基础下拉（%）
+  const JITTER_FLOOR_NOISE = 0.03; // 地板随机抖动上限（%）
 
   // 基础环境提示
   const isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -227,38 +192,12 @@
     const rect = c.parentElement ? c.parentElement.getBoundingClientRect() : {width: c.clientWidth};
     const cssW = Math.floor(rect.width);
     const cssH = Math.max(160, Math.floor(cssW * 0.4));
-    if (c === wave) {
-      c.style.height = cssH + 'px';
-    }
-    c.width  = Math.floor((c === wave ? cssW : Math.min(cssW, 360)) * dpr);
-    c.height = Math.floor((c === wave ? Math.max(160, Math.floor(cssW * 0.4)) : Math.min(c.parentElement.clientHeight, 420)) * dpr);
+    c.style.height = cssH + 'px';
+    c.width  = Math.floor(cssW * dpr);
+    c.height = Math.floor(cssH * dpr);
   }
 
-  function resizeRing(c){
-    const rect = c.parentElement.getBoundingClientRect();
-    // 取正方形边长（CSS像素）
-    const sizeCss = Math.floor(Math.min(rect.width, rect.height));
-
-    // 同步设置“展示尺寸”（CSS像素）
-    c.style.width  = sizeCss + 'px';
-    c.style.height = sizeCss + 'px';
-
-    // 设置“绘图像素”（物理像素），避免模糊与拉伸
-    const dpr = window.devicePixelRatio || 1;
-    c.width  = Math.floor(sizeCss * dpr);
-    c.height = Math.floor(sizeCss * dpr);
-
-    // 可选：若你在 drawRing 里用到线宽等，按 DPR 调整：
-    // const ctx = c.getContext('2d');
-    // ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 然后按 CSS 像素作图
-  }
-
-
-  const onResize = ()=>{
-    resizeCanvas(wave);
-    resizeRing(ringJitter);
-    resizeRing(ringShimmer);
-  };
+  const onResize = ()=>{resizeCanvas(jitterCanvas); resizeCanvas(spec)};
   window.addEventListener('resize', onResize);
   onResize();
 
@@ -283,119 +222,7 @@
   function getTimestamp() {
     const d = new Date();
     const pad = n => n.toString().padStart(2, '0');
-    return [
-      d.getFullYear(),
-      pad(d.getMonth() + 1),
-      pad(d.getDate()),
-      pad(d.getHours()),
-      pad(d.getMinutes()),
-      pad(d.getSeconds())
-    ].join('_');
-  }
-
-  // ===== 估计 Jitter/Shimmer（基于最近1秒，简化法） =====
-  function estimateMetrics(rbuf, writeIdx, sr){
-    const secs = 1.0; // 最近 1 秒
-    const N = Math.min(rbuf.length, Math.floor(sr * secs));
-    if (N < 1024) return { jitterP: 0, shimmerP: 0, ok:false };
-
-    const buf = new Float32Array(N);
-    // 拷贝最近 N 个样本
-    let start = (writeIdx - N + rbuf.length) % rbuf.length;
-    for (let i=0; i<N; i++){
-      buf[i] = rbuf[(start + i) % rbuf.length];
-    }
-
-    // 过零（负->正）作为周期边界
-    const zeroIdx = [];
-    for (let i=1; i<N; i++){
-      if (buf[i-1] < 0 && buf[i] >= 0) zeroIdx.push(i);
-    }
-    if (zeroIdx.length < 4) return { jitterP: 0, shimmerP: 0, ok:false };
-
-    // 周期样本数
-    const periods = [];
-    // 每周期峰-峰振幅近似（max(|x|)）
-    const cycleAmps = [];
-
-    for (let k=1; k<zeroIdx.length; k++){
-      const a = zeroIdx[k-1], b = zeroIdx[k];
-      const len = b - a;
-      if (len <= 2) continue;
-      periods.push(len);
-
-      // 周期内振幅
-      let maxAbs = 0;
-      for (let i=a; i<b; i++){
-        const av = Math.abs(buf[i]);
-        if (av > maxAbs) maxAbs = av;
-      }
-      cycleAmps.push(maxAbs + 1e-9);
-    }
-
-    if (periods.length < 3 || cycleAmps.length < 3){
-      return { jitterP: 0, shimmerP: 0, ok:false };
-    }
-
-    const mean = arr => arr.reduce((s,v)=>s+v,0)/arr.length;
-    const mP = mean(periods);
-    const mA = mean(cycleAmps);
-    const std = (arr,m)=>Math.sqrt(arr.reduce((s,v)=>s+(v-m)*(v-m),0)/arr.length);
-
-    const jLocal = std(periods, mP) / mP;          // 相对周期偏差
-    const sLocal = std(cycleAmps, mA) / mA;        // 相对振幅偏差
-
-    // 百分数（限制上限用于表盘显示）
-    return {
-      jitterP: Math.min(10, Math.max(0, jLocal * 100)),
-      shimmerP: Math.min(10, Math.max(0, sLocal * 100)),
-      ok: true
-    };
-  }
-
-  // ===== 圆环绘制 =====
-  function drawRing(canvas, value, label, color){
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    const cx = W/2, cy = H/2;
-    const r = Math.min(W, H) * 0.36;
-    const lw = Math.max(8, Math.round(r*0.22));
-
-    ctx.clearRect(0,0,W,H);
-
-    // 背景环
-    ctx.lineCap = 'round';
-    ctx.lineWidth = lw;
-    ctx.strokeStyle = '#e2e8f0';
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, -Math.PI*0.75, Math.PI*0.75);
-    ctx.stroke();
-
-    // 数值环（0~30%映射到 270°）
-    const maxP = 30; // 经验上限，避免一发散就铺满
-    const ratio = Math.max(0, Math.min(1, value / maxP));
-    const start = -Math.PI*0.75;
-    const end = start + ratio * (Math.PI*1.5);
-
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, start, end);
-    ctx.stroke();
-
-    // 中心文字
-    ctx.fillStyle = '#0f172a';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    // 数字
-    const valStr = value.toFixed(2) + '%';
-    ctx.font = Math.round(r*0.4) + 'px system-ui, -apple-system, Segoe UI, Roboto';
-    ctx.fillText(valStr, cx, cy - r*0.05);
-
-    // 标签
-    ctx.fillStyle = '#475569';
-    ctx.font = Math.round(r*0.2) + 'px system-ui, -apple-system, Segoe UI, Roboto';
-    ctx.fillText(label, cx, cy + r*0.6);
+    return [d.getFullYear(),pad(d.getMonth()+1),pad(d.getDate()),pad(d.getHours()),pad(d.getMinutes()),pad(d.getSeconds())].join('_');
   }
 
   async function start(){
@@ -407,34 +234,22 @@
     toggleBtn.disabled = true;
     try{
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) {
-        throw new Error('此浏览器不支持 Web Audio API（缺少 AudioContext）。');
-      }
+      if (!AudioCtx) { throw new Error('此浏览器不支持 Web Audio API（缺少 AudioContext）。'); }
 
       ac = new AudioCtx();
       if(ac.state==='suspended') await ac.resume();
       ctxState.textContent=ac.state;
-      ac.onstatechange = (e) => {
-        if (ctxState && e && e.target) ctxState.textContent = e.target.state;
-      };
+      ac.onstatechange = (e) => { if (ctxState && e && e.target) ctxState.textContent = e.target.state; };
 
-      const baseConstraints = { audio: true };
+      const baseConstraints = { audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:false } };
       let constraints = baseConstraints;
-
       const canSelectDevice = !!(micsSel && micsSel.value && micsSel.value !== '');
       if (canSelectDevice) {
-        constraints = {
-          audio: {
-            deviceId: { exact: micsSel.value },
-            echoCancellation:false, noiseSuppression:false, autoGainControl:false
-          }
-        };
-      } else {
-        constraints = { audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false } };
+        constraints = { audio: { deviceId: { exact: micsSel.value }, echoCancellation:true, noiseSuppression:true, autoGainControl:false } };
       }
 
       try { stream = await navigator.mediaDevices.getUserMedia(constraints); }
-      catch (err) { stream = await navigator.mediaDevices.getUserMedia(baseConstraints); }
+      catch (err) { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
 
       src = ac.createMediaStreamSource(stream);
       analyser = ac.createAnalyser();
@@ -448,85 +263,13 @@
 
       srEl.textContent = '采样率: ' + ac.sampleRate + ' Hz';
 
-      // 初始化环形缓冲
-      ringLen = Math.ceil(ac.sampleRate * windowSec * 1.2);
-      ring = new Float32Array(ringLen);
-      writeIdx = 0; totalWritten = 0;
-      tdFloat = new Float32Array(analyser.fftSize);
-      const fd = new Uint8Array(analyser.frequencyBinCount); // 仍用于峰值粗估
+      // 初始化 Jitter & 频谱缓降
+      prevPeriodSec = null;
+      jitterHistory = [];
+      peakEl.textContent = 'jitter_local_percent: —';
+      specHold = new Uint8Array(analyser.frequencyBinCount);
 
-      function draw(){
-        const wctx = wave.getContext('2d');
-        const W = wave.width, H = wave.height;
-
-        // 线宽跟随 DPR
-        wctx.lineWidth = Math.max(1, dpr);
-
-        // 背景与中线（浅色）
-        wctx.clearRect(0,0,W,H);
-        wctx.fillStyle = '#ffffff'; wctx.fillRect(0,0,W,H);
-        wctx.strokeStyle = '#cbd5e1'; wctx.beginPath(); wctx.moveTo(0,H/2); wctx.lineTo(W,H/2); wctx.stroke();
-
-        // 收集一帧
-        analyser.getFloatTimeDomainData(tdFloat);
-        let pk = 0;
-        for (let i = 0; i < tdFloat.length; i++) {
-          const v = tdFloat[i];
-          ring[writeIdx] = v;
-          writeIdx = (writeIdx + 1) % ringLen;
-          totalWritten++;
-          if (Math.abs(v) > pk) pk = Math.abs(v);
-        }
-        peakEl.textContent = '峰值: ' + Math.min(100, Math.round(pk * 100)) + '%';
-
-        // 固定目标窗口
-        const targetSamples = Math.floor(ac.sampleRate * windowSec);
-        const available = Math.min(totalWritten, targetSamples);
-        const stride = Math.max(1, Math.floor(targetSamples / W));
-        let startIdx = (writeIdx - available + ringLen) % ringLen;
-        const visibleCols = Math.max(1, Math.floor(available / stride));
-        const offsetX = W - visibleCols;
-        const scope = scopeInp ? parseFloat(scopeInp.value) : 1;
-
-        // 波形（竖条）
-        wctx.strokeStyle = '#2563eb';
-        wctx.beginPath();
-        for (let x = offsetX; x < W; x++) {
-          let min =  1, max = -1;
-          for (let k = 0; k < stride; k++) {
-            const idx = (startIdx + (x - offsetX) * stride + k) % ringLen;
-            let v = ring[idx] * scope;
-            if (v >  1) v =  1;
-            if (v < -1) v = -1;
-            if (v < min) min = v;
-            if (v > max) max = v;
-          }
-          const y1 = (1 - (max + 1) / 2) * H;
-          const y2 = (1 - (min + 1) / 2) * H;
-          wctx.moveTo(x, y1);
-          wctx.lineTo(x, y2);
-        }
-        wctx.stroke();
-
-        // === 估计 Jitter & Shimmer，并绘制两个圆环 ===
-        const { jitterP, shimmerP, ok } = estimateMetrics(ring, writeIdx, ac.sampleRate);
-
-        // 简单平滑（EWMA）避免跳动
-        const alpha = 0.2;
-        if (ok){
-          state.ewmaJ = alpha * jitterP + (1-alpha) * (state.ewmaJ || jitterP);
-          state.ewmaS = alpha * shimmerP + (1-alpha) * (state.ewmaS || shimmerP);
-          state.jitterPercent = state.ewmaJ;
-          state.shimmerPercent = state.ewmaS;
-        }
-
-        // 画圆环
-        drawRing(ringJitter, state.jitterPercent || 0, 'Jitter', '#2563eb');
-        drawRing(ringShimmer, state.shimmerPercent || 0, 'Shimmer', '#06b6d4');
-
-        raf = requestAnimationFrame(draw);
-      }
-
+      // 开始绘制
       raf = requestAnimationFrame(draw);
       toggleBtn.textContent = '停止';
 
@@ -538,10 +281,7 @@
           chunks = [];
           mediaRecorder.ondataavailable = e => { if(e.data.size>0) chunks.push(e.data); };
           mediaRecorder.onstop = () => {
-            if (!chunks.length) {
-              showModal();
-              return;
-            }
+            if (!chunks.length) { showModal(); return; }
             const mime = mediaRecorder.mimeType || 'audio/webm';
             const blob = new Blob(chunks, {type: mime});
             const ts = new Date().toISOString().replace(/[:.]/g,'-');
@@ -556,8 +296,7 @@
       }
 
     }catch(e){
-      alert((e && e.message) ? e.message :
-            '启动失败，可能是未授权麦克风、非 HTTPS、或浏览器不兼容。');
+      alert((e && e.message) ? e.message : '启动失败，可能是未授权麦克风、非 HTTPS、或浏览器不兼容。');
       stop();
     }finally{
       toggleBtn.disabled = false;
@@ -566,26 +305,28 @@
 
   async function stop(){
     cancelAnimationFrame(raf); raf = null;
-    try{ if (gainNode) gainNode.disconnect(); }catch(_){}
-    try{ if (analyser) analyser.disconnect(); }catch(_){}
-    try{ if (src) src.disconnect(); }catch(_){}
-    try{ if (stream){ stream.getTracks().forEach(t=>t.stop()); } }catch(_){}
-    try{
-      if (ac){
-        ac.onstatechange = null;
-        await ac.close();
-      }
-    }catch(_){}
+    try{ if (gainNode) gainNode.disconnect(); }catch(_){ }
+    try{ if (analyser) analyser.disconnect(); }catch(_){ }
+    try{ if (src) src.disconnect(); }catch(_){ }
+    try{ if (stream){ stream.getTracks().forEach(t=>t.stop()); } }catch(_){ }
+    try{ if (ac){ ac.onstatechange = null; await ac.close(); } }catch(_){ }
 
     ac = null; analyser = null; gainNode = null; src = null; stream = null;
 
     ctxState.textContent='';
     toggleBtn.textContent='开始';
+
+    // 停止录音：触发 MediaRecorder.onstop，从而弹出操作弹窗
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
     } else {
       showModal();
     }
+
+    // 重置显示
+    prevPeriodSec = null;
+    jitterHistory = [];
+    peakEl.textContent = 'jitter_local_percent: —';
   }
 
   // —— 弹窗逻辑 —— 
@@ -605,11 +346,8 @@
     const { blob } = lastRecording;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = input_filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    a.href = url; a.download = input_filename;
+    document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url), 1000);
   });
 
@@ -654,8 +392,181 @@
   });
   scopeInp && scopeInp.addEventListener('input', () => {
     const v = parseFloat(scopeInp.value);
-    scopeVal.textContent = v.toFixed(2) + '×';
+    scopeVal.textContent = v.toFixed(2) + '%';
   });
+
+  // ====== 实时 Jitter 计算与绘制（连续模式）======
+
+  function hannWindow(arr){
+    const N = arr.length;
+    for (let i=0;i<N;i++){
+      arr[i] *= 0.5 * (1 - Math.cos(2*Math.PI*i/(N-1)));
+    }
+  }
+
+  // 估计单帧基频周期（秒）；返回 null 表示无效
+  function estimatePeriodSec(frame, sr, fmin=60, fmax=400){
+    // 去直流
+    let mean = 0; for (let i=0;i<frame.length;i++) mean += frame[i]; mean /= frame.length;
+    for (let i=0;i<frame.length;i++) frame[i] -= mean;
+
+    // 归一化
+    let maxAbs = 1e-12;
+    for (let i=0;i<frame.length;i++){ const a = Math.abs(frame[i]); if (a>maxAbs) maxAbs = a; }
+    if (maxAbs < 1e-6) return null;
+    for (let i=0;i<frame.length;i++) frame[i] /= maxAbs;
+
+    // 中心裁剪（抑制小幅噪声的假峰）
+    const clip = 0.2; // 0~1，越大越“硬”
+    for (let i=0;i<frame.length;i++){
+      const x = frame[i];
+      frame[i] = Math.abs(x) < clip ? 0 : (x > 0 ? x-clip : x+clip);
+    }
+
+    // 加窗
+    hannWindow(frame);
+
+    // 直接自相关（N^2），2048 点开销可接受
+    const N = frame.length;
+    const acf = new Float32Array(N);
+    for (let lag=0; lag<N; lag++){
+      let s = 0; for (let i=0; i<N-lag; i++) s += frame[i]*frame[i+lag];
+      acf[lag] = s;
+    }
+
+    // 在 [lagMin, lagMax] 搜峰
+    const lagMin = Math.floor(sr / fmax);
+    const lagMax = Math.min(N-1, Math.ceil(sr / fmin));
+    if (lagMax - lagMin < 4) return null;
+
+    let bestLag = -1, bestVal = -Infinity;
+    for (let lag=lagMin; lag<=lagMax; lag++){
+      const v = acf[lag];
+      if (v > bestVal){ bestVal = v; bestLag = lag; }
+    }
+    if (bestLag <= 0) return null;
+
+    // 抛物线插值细化
+    const l = bestLag-1, r = bestLag+1;
+    if (l>=0 && r<N){
+      const yl = acf[l], y0 = acf[bestLag], yr = acf[r];
+      const denom = (yl - 2*y0 + yr);
+      if (Math.abs(denom) > 1e-9){
+        const delta = 0.5 * (yl - yr) / denom;
+        bestLag = bestLag + delta; // 允许小数滞后
+      }
+    }
+    const periodSec = bestLag / sr;
+    if (periodSec < 1/fmax || periodSec > 1/fmin) return null;
+    return periodSec;
+  }
+
+  // Praat 本地抖动近似：|T_i - T_{i-1}| / mean(T_i, T_{i-1})
+  function computeLocalJitterPercent(currT, prevT, maxPeriodFactor=1.3){
+    if (prevT == null) return null;
+    const meanT = 0.5 * (currT + prevT);
+    if (meanT <= 0) return null;
+    const ratio = currT > prevT ? (currT/prevT) : (prevT/currT);
+    if (ratio > maxPeriodFactor) return null; // 排除过大跳变
+    const frac = Math.abs(currT - prevT) / meanT;
+    return frac * 100.0;
+  }
+
+  function draw(){
+    if (!analyser || !ac){ raf = requestAnimationFrame(draw); return; }
+
+    const sctx = spec.getContext('2d');
+    const jctx = jitterCanvas.getContext('2d');
+    const SW = spec.width, SH = spec.height;
+    const JW = jitterCanvas.width, JH = jitterCanvas.height;
+
+    // ===== 1) 从 analyser 抽样一帧 PCM，估计能量 =====
+    const td = new Float32Array(analyser.fftSize);
+    analyser.getFloatTimeDomainData(td);
+    const level = rms(td);
+    const isSilent = level < SILENCE_RMS;
+
+    // ===== 2) 频谱（峰值缓降） =====
+    const fd = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(fd);
+    if (!specHold || specHold.length !== fd.length) specHold = new Uint8Array(fd.length);
+    // 缓降：保持上一帧更大值，向下按 0.96 衰减
+    for (let i=0;i<fd.length;i++){
+      const decayed = Math.floor(specHold[i] * 0.96);
+      specHold[i] = Math.max(fd[i], decayed);
+    }
+    sctx.clearRect(0,0,SW,SH);
+    sctx.fillStyle = '#ffffff'; sctx.fillRect(0,0,SW,SH);
+    const bw = Math.max(1, Math.floor(SW / specHold.length));
+    sctx.fillStyle = '#06b6d4';
+    for (let i = 0; i < specHold.length; i++) {
+      const v = specHold[i] / 255;
+      const h = v * SH;
+      sctx.fillRect(i * bw, SH - h, bw - 1, h);
+    }
+
+    // ===== 3) Jitter 连续曲线：有声估计 / 静音平滑滑行 =====
+    let currJ = null;
+    if (!isSilent){
+      const currPeriodSec = estimatePeriodSec(td.slice(), ac.sampleRate, 60, 400);
+      if (currPeriodSec != null){
+        const j = computeLocalJitterPercent(currPeriodSec, prevPeriodSec, 1.3);
+        if (j != null){
+          jitterHistory.push(j);
+          if (jitterHistory.length > JITTER_HISTORY_LEN) jitterHistory.shift();
+          currJ = j;
+        }
+        prevPeriodSec = currPeriodSec;
+      }
+    } else {
+      // 静音：不做周期估计；曲线向 0% 缓慢回落并维持轻微抖动
+      prevPeriodSec = null;
+      let last = jitterHistory.length ? jitterHistory[jitterHistory.length-1] : 0;
+      let next = Math.max(0, last * JITTER_DECAY - JITTER_STEP);
+      next += Math.random() * JITTER_FLOOR_NOISE; // 0~0.03% 细微抖动
+      jitterHistory.push(next);
+      if (jitterHistory.length > JITTER_HISTORY_LEN) jitterHistory.shift();
+    }
+
+    // 画 Jitter 背景网格
+    jctx.clearRect(0,0,JW,JH);
+    jctx.fillStyle = '#ffffff'; jctx.fillRect(0,0,JW,JH);
+    const maxView = parseFloat(scopeInp ? scopeInp.value : 10);
+    jctx.strokeStyle = '#cbd5e1';
+    jctx.lineWidth = Math.max(1, dpr);
+    const refPerc = [0, 1, 2, 5, 10].filter(p=>p<=maxView);
+    refPerc.forEach(p=>{
+      const y = JH - (p/maxView) * JH;
+      if (y>=0 && y<=JH){ jctx.beginPath(); jctx.moveTo(0, y); jctx.lineTo(JW, y); jctx.stroke(); }
+    });
+
+    // 画 Jitter 曲线
+    if (jitterHistory.length > 1){
+      jctx.beginPath();
+      jctx.strokeStyle = '#2563eb';
+      const n = jitterHistory.length;
+      for (let i=0;i<n;i++){
+        const x = Math.round((i/(n-1)) * (JW-1));
+        const val = Math.min(jitterHistory[i], maxView);
+        const y = Math.round(JH - (val/maxView) * (JH-1));
+        if (i===0) jctx.moveTo(x,y); else jctx.lineTo(x,y);
+      }
+      jctx.stroke();
+    }
+
+    // 数值显示
+    if (!isSilent && currJ != null){
+      peakEl.textContent = 'jitter_local_percent: ' + currJ.toFixed(2) + '%';
+    } else if (isSilent){
+      const val = jitterHistory.length ? jitterHistory.at(-1) : 0;
+      peakEl.textContent = 'jitter_local_percent: ~' + val.toFixed(2) + '%（静音）';
+    } else {
+      if (!jitterHistory.length) peakEl.textContent = 'jitter_local_percent: —';
+    }
+
+    raf = requestAnimationFrame(draw);
+  }
+
 })();
 </script>
 </body>
