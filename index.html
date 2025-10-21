@@ -293,6 +293,7 @@
   }
 
   // ===== 估计 Jitter/Shimmer（基于最近1秒，简化法） =====
+  // TODO: 维护一个长窗，比如过去3–5秒的全局均值
   function estimateMetrics(rbuf, writeIdx, sr){
     const secs = 0.6; // 0.5~0.8s 都可以
     const N = Math.min(rbuf.length, Math.floor(sr * secs));
@@ -553,69 +554,64 @@
 
       // 录音能力
       if ('MediaRecorder' in window) {
-        let options = {};
-
-        // 检测支持的 MIME 类型（iOS 可能不支持 audio/webm）
-        const mimeTypes = [
-          'audio/webm',
-          'audio/mp4',
-          'audio/mpeg',
-          'audio/wav',
-          'audio/ogg',
-          'audio/x-m4a'
-        ];
-
-        // 找到第一个支持的 MIME 类型
-        for (let mimeType of mimeTypes) {
-          if (MediaRecorder.isTypeSupported(mimeType)) {
-            options.mimeType = mimeType;
-            break;
+          let options = {};
+          const preferredTypes = [
+              'audio/webm;codecs=opus',
+              'audio/mp4',
+              'audio/wav',
+              'audio/mpeg'
+          ];
+          
+          // 找到第一个支持的 MIME 类型
+          for (let mimeType of preferredTypes) {
+              if (MediaRecorder.isTypeSupported(mimeType)) {
+                  options.mimeType = mimeType;
+                  break;
+              }
           }
-        }
 
-        // 如果没有找到支持的格式，让 MediaRecorder 使用默认格式
-        try {
-          mediaRecorder = new MediaRecorder(stream, options);
-          console.log('使用 MediaRecorder，MIME 类型:', options.mimeType || '默认');
-          
-          let chunks = [];
-          mediaRecorder.ondataavailable = e => { 
-            if(e.data.size > 0) chunks.push(e.data); 
-          };
-          
-          mediaRecorder.onstop = () => {
-            if (chunks.length === 0) {
-              console.log('没有录音数据');
-              showModal();
-              return;
-            }
-            
-            const mime = mediaRecorder.mimeType || 'audio/webm';
-            const blob = new Blob(chunks, {type: mime});
-            const ts = new Date().toISOString().replace(/[:.]/g,'-');
-            
-            // 根据 MIME 类型确定文件扩展名
-            let extension = 'webm';
-            if (mime.includes('mp4') || mime.includes('m4a')) extension = 'm4a';
-            else if (mime.includes('mpeg')) extension = 'mp3';
-            else if (mime.includes('wav')) extension = 'wav';
-            else if (mime.includes('ogg')) extension = 'ogg';
-            
-            const filename = `record-${ts}.${extension}`;
-            lastRecording = { blob, mime, filename };
-            showModal();
-          };
-          
-          mediaRecorder.start();
-          
-        } catch (err) {
-          console.error('MediaRecorder 创建失败:', err);
-          // 降级处理：不使用录音功能
-          mediaRecorder = null;
-        }
-      } else {
-        console.log('当前环境不支持 MediaRecorder');
-        mediaRecorder = null;
+          try {
+              mediaRecorder = new MediaRecorder(stream, options);
+              console.log('使用 MediaRecorder，MIME 类型:', options.mimeType || '默认');
+              
+              let chunks = [];
+              mediaRecorder.ondataavailable = e => { 
+                  console.log('收到数据块:', e.data.size, 'bytes');
+                  if(e.data.size > 0) chunks.push(e.data); 
+              };
+              
+              mediaRecorder.onstop = () => {
+                  console.log('录音停止，总块数:', chunks.length);
+                  if (chunks.length === 0) {
+                      console.log('没有录音数据');
+                      showModal();
+                      return;
+                  }
+                  
+                  const mime = mediaRecorder.mimeType || 'audio/webm';
+                  const blob = new Blob(chunks, {type: mime});
+                  const ts = new Date().toISOString().replace(/[:.]/g,'-');
+                  
+                  // 根据 MIME 类型确定文件扩展名
+                  let extension = 'webm';
+                  if (mime.includes('mp4') || mime.includes('m4a')) extension = 'm4a';
+                  else if (mime.includes('mpeg')) extension = 'mp3';
+                  else if (mime.includes('wav')) extension = 'wav';
+                  else if (mime.includes('ogg')) extension = 'ogg';
+                  
+                  const filename = `record-${ts}.${extension}`;
+                  lastRecording = { blob, mime, filename };
+                  showModal();
+              };
+              
+              // 添加 timeslice 参数（100ms）确保定期获取数据
+              mediaRecorder.start(100);
+              
+          } catch (err) {
+              console.error('MediaRecorder 创建失败:', err);
+              // 降级处理：不使用录音功能
+              mediaRecorder = null;
+          }
       }
 
     }catch(e){
@@ -628,28 +624,38 @@
   }
 
   async function stop(){
-    cancelAnimationFrame(raf); raf = null;
-    try{ if (gainNode) gainNode.disconnect(); }catch(_){}
-    try{ if (analyser) analyser.disconnect(); }catch(_){}
-    try{ if (src) src.disconnect(); }catch(_){}
-    try{ if (stream){ stream.getTracks().forEach(t=>t.stop()); } }catch(_){}
-    try{
-      if (ac){
-        ac.onstatechange = null;
-        await ac.close();
+      cancelAnimationFrame(raf); raf = null;
+      
+      // 先停止录音
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+          // 等待一小段时间让数据收集完成
+          await new Promise(resolve => setTimeout(resolve, 200));
       }
-    }catch(_){}
+      
+      // 然后关闭其他资源
+      try{ if (gainNode) gainNode.disconnect(); }catch(_){}
+      try{ if (analyser) analyser.disconnect(); }catch(_){}
+      try{ if (src) src.disconnect(); }catch(_){}
+      try{ if (stream){ stream.getTracks().forEach(t=>t.stop()); } }catch(_){}
+      try{
+          if (ac){
+              ac.onstatechange = null;
+              await ac.close();
+          }
+      }catch(_){}
 
-    ac = null; analyser = null; gainNode = null; src = null; stream = null;
+      ac = null; analyser = null; gainNode = null; src = null; stream = null;
 
-    ctxState.textContent='';
-    toggleBtn.textContent='开始';
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-    } else {
-      showModal();
-    }
+      ctxState.textContent='';
+      toggleBtn.textContent='开始';
+      
+      // 如果没有录音器或者录音器已经停止，直接显示弹窗
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+          showModal();
+      }
   }
+
 
   // —— 弹窗逻辑 —— 
   function showModal(){
