@@ -294,81 +294,84 @@
 
   // ===== 估计 Jitter/Shimmer（基于最近1秒，简化法） =====
   function estimateMetrics(rbuf, writeIdx, sr){
-    const secs = 1.0;
+    const secs = 0.6; // 0.5~0.8s 都可以
     const N = Math.min(rbuf.length, Math.floor(sr * secs));
     if (N < 1024) return { jitterP: 0, shimmerP: 0, ok:false };
 
     // 拷贝最近 N 个样本并算 RMS
     const buf = new Float32Array(N);
     let start = (writeIdx - N + rbuf.length) % rbuf.length;
-    let rms2 = 0;
-    for (let i = 0; i < N; i++){
-      const v = rbuf[(start + i) % rbuf.length];
-      buf[i] = v; rms2 += v*v;
+    let s2 = 0;
+    for (let i=0;i<N;i++){ const v=rbuf[(start+i)%rbuf.length]; buf[i]=v; s2+=v*v; }
+    const rms = Math.sqrt(s2/N);
+    if (rms < 0.003) return { jitterP:0, shimmerP:0, ok:false }; // 静音直接不计
+
+    // —— 自相关找基音（50–500Hz） —— //
+    const minLag = Math.floor(sr/500), maxLag = Math.ceil(sr/50);
+    let bestLag=-1, bestR=0;
+    for (let lag=minLag; lag<=maxLag; lag++){
+      let num=0, d1=0, d2=0;
+      for (let i=lag;i<N;i++){ const a=buf[i], b=buf[i-lag]; num+=a*b; d1+=a*a; d2+=b*b; }
+      const r = num / Math.sqrt(d1*d2 + 1e-12);
+      if (r > bestR){ bestR=r; bestLag=lag; }
     }
-    const rms = Math.sqrt(rms2 / N);
+    if (bestR < 0.6 || bestLag < 0) return { jitterP:0, shimmerP:0, ok:false };
 
-    // 能量门限：把原来的 1e-4 改成更宽松（典型人声 rms ~ 0.02~0.2）
-    if (rms < 0.002) return { jitterP: 0, shimmerP: 0, ok:false };
-
-    // —— 自适应舒密特过零 —— //
-    // 阈值随 RMS 走：说话小声也能触发；大声不会误检太多
-    const thr    = Math.max(0.003, rms * 0.6);
-    const relThr = thr * 0.35;
-
-    let above = false;
-    let zc = [];
-    for (let i = 1; i < N; i++){
-      if (!above && buf[i-1] < -relThr && buf[i] >=  thr) { above = true;  zc.push(i); }
-      if ( above && buf[i]    <  relThr)                    { above = false; }
-    }
-
-    // 回退策略：如果自适应舒密特太严格，就退回普通过零
-    if (zc.length < 4){
-      zc = [];
-      for (let i = 1; i < N; i++){
-        if (buf[i-1] < 0 && buf[i] >= 0) zc.push(i);
+    // 在 ±15% 窗内找连续周期边界（峰）
+    const lo = Math.floor(bestLag*0.85), hi = Math.ceil(bestLag*1.15);
+    const peaks = [];
+    for (let i=bestLag; i<N-hi; ){
+      let localBest=i, localMax=-1e9;
+      for (let lag=lo; lag<=hi; lag++){
+        const j=i+lag; if (j>=N) break;
+        const v=Math.abs(buf[j]);
+        if (v>localMax){ localMax=v; localBest=j; }
       }
+      peaks.push(localBest);
+      i=localBest;
     }
-    if (zc.length < 6) return { jitterP: 0, shimmerP: 0, ok:false };
+    if (peaks.length < 8) return { jitterP:0, shimmerP:0, ok:false };
 
-    // 允许更宽的基音范围（50–500 Hz），增强鲁棒性
-    const minSamp = Math.floor(sr / 500);
-    const maxSamp = Math.ceil (sr / 50);
-
-    const periods = [];
-    const amps = [];
-
-    for (let k = 1; k < zc.length; k++){
-      const a = zc[k-1], b = zc[k];
-      const L = b - a;
-      if (L < minSamp || L > maxSamp) continue;
-
+    // 周期与每周期幅度（峰-峰）
+    const periods=[], amps=[];
+    for (let k=1;k<peaks.length;k++){
+      const a=peaks[k-1], b=peaks[k];
+      const L=b-a;
+      if (L<minLag || L>maxLag) continue;
       periods.push(L);
 
-      // 周期振幅（峰-峰），避免 0
-      let maxV = -1e9, minV = 1e9;
-      for (let i = a; i < b; i++){ const v = buf[i]; if (v > maxV) maxV = v; if (v < minV) minV = v; }
-      amps.push(Math.max(1e-9, maxV - minV));
+      let maxV=-1e9, minV=1e9;
+      for (let t=a;t<b;t++){ const v=buf[t]; if(v>maxV)maxV=v; if(v<minV)minV=v; }
+      amps.push(Math.max(1e-9, maxV-minV));
     }
-
-    if (periods.length < 4) return { jitterP: 0, shimmerP: 0, ok:false };
+    const n = periods.length;
+    if (n < 7) return { jitterP:0, shimmerP:0, ok:false };
 
     const mean = arr => arr.reduce((s,v)=>s+v,0)/arr.length;
-    const mP = mean(periods);
-    const mA = mean(amps);
+    const mP = mean(periods), mA = mean(amps);
 
-    // Praat 风格：相邻差的平均 / 均值
-    let sumDP = 0, sumDA = 0;
-    for (let i = 1; i < periods.length; i++) sumDP += Math.abs(periods[i] - periods[i-1]);
-    for (let i = 1; i < amps.length;    i++) sumDA += Math.abs(amps[i]    - amps[i-1]);
+    // —— PPQ5：每个周期与其前后各2个，共5个周期均值的差 —— //
+    let sumPPQ5 = 0, cPPQ5 = 0;
+    for (let i=2; i<=n-3; i++){
+      const localMeanP = (periods[i-2]+periods[i-1]+periods[i]+periods[i+1]+periods[i+2])/5;
+      sumPPQ5 += Math.abs(periods[i] - localMeanP);
+      cPPQ5++;
+    }
+    const jPPQ5 = (cPPQ5 ? (sumPPQ5/cPPQ5) : 0) / mP; // 比上全局均值
 
-    const jLocal = (sumDP / (periods.length - 1)) / mP;
-    const sLocal = (sumDA / (amps.length    - 1)) / mA;
+    // —— APQ5（Shimmer）：对每周期幅度做同样的 5 点平均差 —— //
+    let sumAPQ5 = 0, cAPQ5 = 0;
+    for (let i=2; i<=amps.length-3; i++){
+      const localMeanA = (amps[i-2]+amps[i-1]+amps[i]+amps[i+1]+amps[i+2])/5;
+      sumAPQ5 += Math.abs(amps[i] - localMeanA);
+      cAPQ5++;
+    }
+    const sAPQ5 = (cAPQ5 ? (sumAPQ5/cAPQ5) : 0) / mA;
 
     return {
-      jitterP: Math.max(0, Math.min(50, jLocal * 100)),
-      shimmerP: Math.max(0, Math.min(50, sLocal * 100)),
+      // 百分比并限制合理量程：PPQ5 常见 < 2%，APQ5 常见 < 10–15%
+      jitterP:  Math.max(0, Math.min(10,  jPPQ5 * 100)),
+      shimmerP: Math.max(0, Math.min(20, sAPQ5 * 100)),
       ok: true
     };
   }
@@ -376,7 +379,7 @@
 
 
   // ===== 圆环绘制 =====
-  function drawRing(canvas, value, label, color){
+  function drawRing(canvas, value, label, color, maxP){
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
     const cx = W/2, cy = H/2;
@@ -393,12 +396,10 @@
     ctx.arc(cx, cy, r, -Math.PI*0.75, Math.PI*0.75);
     ctx.stroke();
 
-    // 数值环（0~30%映射到 270°）
-    const maxP = 50; // 经验上限，避免一发散就铺满
-    const ratio = Math.max(0, Math.min(1, value / maxP));
+    // 数值环
+    const ratio = Math.max(0, Math.min(1, value / (maxP || 10)));
     const start = -Math.PI*0.75;
     const end = start + ratio * (Math.PI*1.5);
-
     ctx.strokeStyle = color;
     ctx.beginPath();
     ctx.arc(cx, cy, r, start, end);
@@ -409,16 +410,15 @@
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    // 数字
     const valStr = value.toFixed(2) + '%';
-    ctx.font = Math.round(r*0.4) + 'px system-ui, -apple-system, Segoe UI, Roboto';
+    ctx.font = Math.round(r*0.4) + 'px system-ui,-apple-system,Segoe UI,Roboto';
     ctx.fillText(valStr, cx, cy - r*0.05);
 
-    // 标签
     ctx.fillStyle = '#475569';
-    ctx.font = Math.round(r*0.2) + 'px system-ui, -apple-system, Segoe UI, Roboto';
+    ctx.font = Math.round(r*0.22) + 'px system-ui,-apple-system,Segoe UI,Roboto';
     ctx.fillText(label, cx, cy + r*0.6);
   }
+
 
   async function start(){
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -533,7 +533,7 @@
         // === 估计 Jitter & Shimmer，并绘制两个圆环 ===
         const { jitterP, shimmerP, ok } = estimateMetrics(ring, writeIdx, ac.sampleRate);
         // 简单平滑（EWMA）避免跳动
-        const alpha = 0.8;
+        const alpha = 0.5;
         if (ok){
           state.ewmaJ = alpha * jitterP + (1-alpha) * (state.ewmaJ || jitterP);
           state.ewmaS = alpha * shimmerP + (1-alpha) * (state.ewmaS || shimmerP);
@@ -542,8 +542,8 @@
         }
 
         // 画圆环
-        drawRing(ringJitter, state.jitterPercent || 0, 'Jitter', '#2563eb');
-        drawRing(ringShimmer, state.shimmerPercent || 0, 'Shimmer', '#06b6d4');
+        drawRing(ringJitter, state.jitterPercent || 0, 'Jitter', '#2563eb', 10);
+        drawRing(ringShimmer, state.shimmerPercent || 0, 'Shimmer', '#06b6d4', 20);
 
         raf = requestAnimationFrame(draw);
       }
