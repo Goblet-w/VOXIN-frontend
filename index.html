@@ -49,13 +49,13 @@
     .modal-card h3{margin:4px 0 6px;font-size:18px}
     .modal-card p{margin:0 0 10px;color:var(--muted)}
 
-    /* —— 新：双圆环容器（替换原谱图位置） —— */
     .ring-wrap{
       display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr)); /* 始终两列 */
+      gap:8px;
       align-items:stretch;
     }
+
     .ring{
       display:flex;
       align-items:center;
@@ -63,23 +63,22 @@
       background:#f1f5f9;
       border:1px solid var(--soft);
       border-radius:12px;
-      /* 用正方形比例避免横向拉伸 */
-      aspect-ratio: 1 / 1;
-      width: 100%;
-      /* 可选最小高度，避免太小 */
-      min-height: 180px;
+
+      aspect-ratio: 1 / 1;  /* 正方形，避免椭圆 */
+      width:100%;           /* 跟随网格等分 */
+      /* 不要固定/最小高度，交给 aspect-ratio 和宽度决定 */
     }
 
-    /* 关键点：不要用 100%/100% 拉 canvas！ */
+    /* 重要：不要用 100%/100% 拉伸 canvas，交给 JS 来设尺寸 */
     .ring canvas{
       background:transparent;
       border:none;
       border-radius:12px;
-      /* 让尺寸交给 JS 来设定 */
       width:auto;
       height:auto;
       display:block;
     }
+
 
   </style>
 </head>
@@ -236,22 +235,22 @@
 
   function resizeRing(c){
     const rect = c.parentElement.getBoundingClientRect();
-    // 取正方形边长（CSS像素）
-    const sizeCss = Math.floor(Math.min(rect.width, rect.height));
+    // 若高度未定，用宽度兜底（aspect-ratio 会让最终高度≈宽度）
+    let sizeCss = Math.floor(rect.width);
+    if (rect.height && rect.height > 0) {
+      sizeCss = Math.floor(Math.min(rect.width, rect.height));
+    }
 
-    // 同步设置“展示尺寸”（CSS像素）
+    // 展示尺寸（CSS 像素）
     c.style.width  = sizeCss + 'px';
     c.style.height = sizeCss + 'px';
 
-    // 设置“绘图像素”（物理像素），避免模糊与拉伸
+    // 绘图像素（物理像素）
     const dpr = window.devicePixelRatio || 1;
     c.width  = Math.floor(sizeCss * dpr);
     c.height = Math.floor(sizeCss * dpr);
-
-    // 可选：若你在 drawRing 里用到线宽等，按 DPR 调整：
-    // const ctx = c.getContext('2d');
-    // ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 然后按 CSS 像素作图
   }
+
 
 
   const onResize = ()=>{
