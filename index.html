@@ -668,7 +668,7 @@
   btnDownload.addEventListener('click', () => {
     if (!lastRecording) { alert('没有可下载的录音。'); return; }
     if (!filenameInput.value.trim()) { alert('请输入文件名。'); return; }
-    const input_filename = `${filenameInput.value.trim()}.${lastRecording.filename.split('.').pop()}`;
+    const input_filename = `${filenameInput.value.trim()}_${getTimestamp()}.${lastRecording.filename.split('.').pop()}`;
 
     const { blob } = lastRecording;
     const url = URL.createObjectURL(blob);
@@ -686,7 +686,7 @@
     try{
       if (!lastRecording) { alert('没有可上传的录音。'); return; }
       if (!filenameInput.value.trim()) { alert('请输入文件名。'); return; }
-      const input_filename = `${filenameInput.value.trim()}.${lastRecording.filename.split('.').pop()}`;
+      const input_filename = `${filenameInput.value.trim()}_${getTimestamp}.${lastRecording.filename.split('.').pop()}`;
 
       uploadStatus.textContent = '正在上传…';
       const ENDPOINT = 'https://www.iloveyouso.top/api/upload';
