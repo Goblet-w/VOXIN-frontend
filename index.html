@@ -689,20 +689,61 @@
       const input_filename = `${filenameInput.value.trim()}_${getTimestamp()}.${lastRecording.filename.split('.').pop()}`;
 
       uploadStatus.textContent = '正在上传…';
-      const ENDPOINT = 'https://www.iloveyouso.top/api/upload';
+      var ENDPOINT = 'https://www.iloveyouso.top/api/upload/0';
+      ENDPOINT = 'http://localhost:5000/api/upload/0'; // ← 本地调试：按需切换
+
       const { blob, mime } = lastRecording;
       const fd = new FormData();
       fd.append('file', blob, input_filename);
       fd.append('mime', mime);
-      const res = await fetch(ENDPOINT, { method:'POST', body: fd, headers: {
-        'Accept': 'application/json',
-      } });
+
+      const res = await fetch(ENDPOINT, {
+        method:'POST',
+        body: fd,
+        headers: { 'Accept': 'application/json' }
+      });
+
       if (!res.ok) throw new Error('上传失败，状态码：' + res.status);
-      const text = await res.text().catch(()=> '');
-      console.log('上传响应:', text);
+
+      // 解析响应：优先 JSON，失败再尝试纯文本里的 JSON 片段
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch(e) {
+        const txt = await res.text().catch(()=> '');
+        try{
+          payload = JSON.parse(txt);
+        }catch(e2){
+          // 尝试从文本中提取 JSON（若服务端包裹了其他文字）
+          const match = txt && txt.match(/\{[\s\S]*\}$/);
+          if (match) {
+            try{ payload = JSON.parse(match[0]); }catch(_){}
+          }
+        }
+      }
+
       uploadStatus.textContent = '上传成功！';
+
+      // 兼容你的服务端返回：要求含 report 字段；若没有，用一个回退示例
+      const report = (payload && payload.report) ? payload.report : null;
+
+      // 如果结构异常，判定为失败
+      if (!report || !report.metrics) {
+        alert('报告生成失败：返回数据不完整'); 
+        return;
+      }
+
+      openVocalReportInIframe({
+        filename: input_filename,
+        report,
+        timestamp: new Date()
+      });
+
+
     }catch(err){
+      console.error(err);
       uploadStatus.textContent = '上传失败：' + (err && err.message ? err.message : err);
+      alert('报告生成失败');
     }
   });
 
@@ -730,5 +771,55 @@
 </script>
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 <script>eruda.init();</script>
+<!-- 覆盖层 + 居中容器 + iframe -->
+<style>
+  .vr-overlay{position:fixed; inset:0; display:none; z-index:9998;}
+  .vr-mask{position:absolute; inset:0; background:rgba(0,0,0,.45);}
+  .vr-shell{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;}
+  .vr-panel{pointer-events:auto; width:min(720px,92vw); height:80vh; background:#fff; border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,.25); overflow:hidden}
+  #reportFrame{width:100%; height:100%; border:0;}
+</style>
+
+<div id="vrOverlay" class="vr-overlay" aria-hidden="true">
+  <div class="vr-mask" onclick="hideReportOverlay()"></div>
+  <div class="vr-shell">
+    <div class="vr-panel">
+      <iframe id="reportFrame" src="vocalReport.html"></iframe>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 显示/隐藏覆盖层
+  function showReportOverlay(){ document.getElementById('vrOverlay').style.display='block'; }
+  function hideReportOverlay(){ document.getElementById('vrOverlay').style.display='none'; }
+
+  // 接收子页面的关闭指令
+  window.addEventListener('message', (e)=>{
+    // 如部署到线上，建议校验 e.origin 是否与你的站点同源
+    if (!e || !e.data || !e.data.type) return;
+    if (e.data.type === 'CLOSE_VOCAL_REPORT') hideReportOverlay();
+  });
+
+  // 上传成功后调用：把数据用 postMessage 发给 iframe，并显示覆盖层
+  async function openVocalReportInIframe({ filename, report, timestamp }){
+    const frame = document.getElementById('reportFrame');
+    // 确保 iframe 已加载完成再发送
+    const send = () => {
+      try{
+        frame.contentWindow.postMessage({
+          type: 'OPEN_VOCAL_REPORT',
+          payload: { filename, report, timestamp }
+        }, '*'); // 上线建议改为同源 origin
+        showReportOverlay();
+      }catch(err){ console.error('发送报告失败:', err); }
+    };
+    if (frame.contentWindow && frame.contentDocument && frame.contentDocument.readyState === 'complete') {
+      send();
+    } else {
+      frame.addEventListener('load', send, { once:true });
+    }
+  }
+</script>
 </body>
 </html>

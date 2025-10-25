@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>声乐报告</title>
+  <style>
+    body{margin:0;font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial}
+    .vr-card{ width:100%; height:100%; box-sizing:border-box; padding:18px; background:#fff; color:#1f2937 }
+    .vr-header{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px }
+    .vr-title{ font-size:20px; font-weight:800; letter-spacing:.2px; display:flex; align-items:center; gap:10px }
+    .vr-badge{ font-size:12px; padding:4px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-weight:700 }
+    .vr-score{ font-size:28px; font-weight:900; color:#0f766e; background:#ecfeff; border:1px solid #cffafe; padding:4px 10px; border-radius:10px }
+    .vr-top-actions{display:flex; align-items:center; gap:8px}
+    .vr-meta{ font-size:12px; color:#6b7280; margin-bottom:10px }
+    .vr-grid{ display:grid; gap:12px; grid-template-columns:repeat(2,minmax(0,1fr)); height:calc(100% - 116px); overflow:auto }
+    .vr-section{ border:1px solid #e5e7eb; border-radius:12px; padding:12px; background:#fff }
+    .vr-section h4{ margin:0 0 8px; font-size:13px; color:#374151; letter-spacing:.2px }
+    .vr-kv{ display:grid; grid-template-columns:1fr auto; gap:6px; font-size:13px }
+    .vr-kv div:nth-child(odd){ color:#6b7280 }
+    .vr-kv div:nth-child(even){ font-weight:700; color:#111827 }
+    .vr-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:12px }
+    .vr-btn{ padding:10px 14px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; font-weight:700 }
+    .vr-btn.primary{ background:#111827; color:#fff; border-color:#111827 }
+    @media (max-width:640px){ .vr-grid{ grid-template-columns:1fr } }
+  </style>
+</head>
+<body>
+  <div id="vrCard" class="vr-card">
+    <div class="vr-header">
+      <div class="vr-title">
+        🎤 声乐报告
+        <span id="vrLevel" class="vr-badge">—</span>
+      </div>
+      <div class="vr-top-actions">
+        <span id="vrScore" class="vr-score">—</span>
+        <button class="vr-btn" onclick="parent.postMessage({type:'CLOSE_VOCAL_REPORT'}, '*')">关闭</button>
+        <button class="vr-btn primary" onclick="saveVocalReportAsImage()">保存为图片</button>
+      </div>
+    </div>
+
+    <div id="vrMeta" class="vr-meta">文件：— ｜ 时间：—</div>
+
+    <div class="vr-grid">
+      <div class="vr-section">
+        <h4>F0 基频</h4><div class="vr-kv" id="vrF0"></div>
+      </div>
+      <div class="vr-section">
+        <h4>呼吸（Breath Index）</h4><div class="vr-kv" id="vrBreath"></div>
+      </div>
+      <div class="vr-section">
+        <h4>Jitter（频率抖动）</h4><div class="vr-kv" id="vrJitter"></div>
+      </div>
+      <div class="vr-section">
+        <h4>Shimmer（振幅抖动）</h4><div class="vr-kv" id="vrShimmer"></div>
+      </div>
+      <div class="vr-section">
+        <h4>声压级 SPL</h4><div class="vr-kv" id="vrSPL"></div>
+      </div>
+    </div>
+
+    <div class="vr-actions">
+      <!-- 可留空；顶部已有按钮 -->
+    </div>
+  </div>
+
+  <!-- 保存为图片 -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script>
+    // 渲染入口：接收父页面消息
+    window.addEventListener('message', (e)=>{
+      // 上线建议校验 e.origin
+      const msg = e.data || {};
+      if (msg.type === 'OPEN_VOCAL_REPORT' && msg.payload) {
+        const { filename, report, timestamp } = msg.payload;
+        try {
+          openVocalReport({ filename, report, timestamp });
+        } catch (err) {
+          console.error(err);
+          alert('报告生成失败');
+        }
+      }
+    });
+
+    // —— 渲染逻辑 —— //
+    function openVocalReport({ filename, report, timestamp }){
+      // 头部
+      setText('vrLevel', report?.level ?? '—');
+      setText('vrScore', (typeof report?.score === 'number') ? Math.round(report.score) : (report?.score ?? '—'));
+      setText('vrMeta', `文件：${filename || '—'} ｜ 时间：${formatTime(timestamp)}`);
+
+      // 各区块
+      fillKV('vrF0', {
+        '平均(Hz)': num(report?.metrics?.f0?.mean_Hz),
+        '最小(Hz)': num(report?.metrics?.f0?.min_Hz),
+        '最大(Hz)': num(report?.metrics?.f0?.max_Hz),
+        '标准差(Hz)': num(report?.metrics?.f0?.std_Hz),
+        'CV(%)': num(report?.metrics?.f0?.cv_percent),
+        '总帧数': num(report?.metrics?.f0?.num_frames),
+        '有声帧': num(report?.metrics?.f0?.num_voiced_frames),
+      });
+
+      fillKV('vrBreath', {
+        'Breath Mean BI': num(report?.metrics?.breath_index?.breath_mean_BI),
+        'Breath Std BI': num(report?.metrics?.breath_index?.breath_std_BI),
+        'Breath CV': num(report?.metrics?.breath_index?.breath_CV),
+      });
+
+      fillKV('vrJitter', {
+        'Local(%)': num(report?.metrics?.jitter?.jitter_local_percent),
+        'PPQ5(%)': num(report?.metrics?.jitter?.jitter_ppq5_percent),
+        'RAP(%)': num(report?.metrics?.jitter?.jitter_rap_percent),
+      });
+
+      fillKV('vrShimmer', {
+        'Local(%)': num(report?.metrics?.shimmer?.shimmer_local_percent),
+        'APQ3(%)': num(report?.metrics?.shimmer?.shimmer_apq3_percent),
+        'APQ5(%)': num(report?.metrics?.shimmer?.shimmer_apq5_percent),
+        'APQ11(%)': num(report?.metrics?.shimmer?.shimmer_apq11_percent),
+      });
+
+      fillKV('vrSPL', {
+        'Leq(dB)': num(report?.metrics?.spl?.Leq_dB),
+        'Lmax(dB)': num(report?.metrics?.spl?.Lmax_dB),
+      });
+    }
+
+    function saveVocalReportAsImage(){
+      const card = document.getElementById('vrCard');
+      if (!window.html2canvas) { alert('保存失败：html2canvas 未加载'); return; }
+      html2canvas(card, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
+        const url = canvas.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `声乐报告_${formatTime(new Date()).replace(/[^\d]/g,'').slice(0,14)}.png`;
+        document.body.appendChild(a); a.click(); a.remove();
+      }).catch(err=>{ console.error(err); alert('保存失败：无法导出图片'); });
+    }
+
+    // —— 小工具 —— //
+    function setText(id, v){ const el = document.getElementById(id); if (el) el.textContent = String(v); }
+    function fillKV(containerId, obj){
+      const el = document.getElementById(containerId); el.innerHTML = '';
+      Object.entries(obj).forEach(([k,v])=>{
+        const kEl = document.createElement('div'); kEl.textContent = k;
+        const vEl = document.createElement('div'); vEl.textContent = v;
+        el.appendChild(kEl); el.appendChild(vEl);
+      });
+    }
+    function num(v){
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+      const n = Number(v);
+      if (Math.abs(n) >= 1000 || Math.abs(n) < 0.01) return n.toExponential(2);
+      return (Math.round(n * 1000) / 1000).toString();
+    }
+    function formatTime(d){
+      try{
+        const dt = (d instanceof Date) ? d : new Date(d);
+        const pad = (x)=> String(x).padStart(2,'0');
+        return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+      }catch{ return '—' }
+    }
+
+    // —— 自测按钮（单独打开 vocalReport.html 时调试，部署可删除）——
+    // (function addDemoButton(){
+    //   const btn = document.createElement('button');
+    //   btn.textContent = '自测渲染';
+    //   btn.className = 'vr-btn primary';
+    //   Object.assign(btn.style,{position:'fixed',right:'12px',bottom:'12px',zIndex:9999});
+    //   btn.onclick = ()=>{
+    //     const demo = {
+    //       level: '优秀!',
+    //       score: 100,
+    //       metrics: {
+    //         breath_index: { breath_mean_BI: 0.1208319024, breath_std_BI: 0.0568108546, breath_CV: 0.4701643648 },
+    //         f0: { mean_Hz: 136.06505945, min_Hz: 125.5353986, max_Hz: 138.6481461, std_Hz: 3.95454014, cv_percent: 2.906359764, num_frames: 34, num_voiced_frames: 34 },
+    //         jitter: { jitter_local_percent: 0.32316782, jitter_ppq5_percent: 0.148526675, jitter_rap_percent: 0.1032408409 },
+    //         shimmer: { shimmer_local_percent: 2.25041558, shimmer_apq3_percent: 0.962724695, shimmer_apq5_percent: 1.153823465, shimmer_apq11_percent: 2.166404509 },
+    //         spl: { Leq_dB: -50.8744008, Lmax_dB: -42.36758769 }
+    //       }
+    //     };
+    //     openVocalReport({ filename: 'test01_2025_10_25_13_41_23.m4a', report: demo, timestamp: new Date() });
+    //   };
+    //   document.body.appendChild(btn);
+    // })();
+  </script>
+</body>
+</html>
