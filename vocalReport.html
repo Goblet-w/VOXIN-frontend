@@ -23,49 +23,6 @@
     .vr-btn{ padding:10px 14px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; font-weight:700 }
     .vr-btn.primary{ background:#111827; color:#fff; border-color:#111827 }
     @media (max-width:640px){ .vr-grid{ grid-template-columns:1fr } }
-    /* 1) 不要在这些元素内部拆字换行（中文默认可任意断行） */
-    .vr-title,
-    .vr-badge,
-    .vr-score,
-    .vr-btn {
-      white-space: nowrap;       /* 关键：元素内不换行 */
-      word-break: keep-all;      /* 尽量保持整体，不在 CJK 逐字断行 */
-    }
-
-    /* 2) 允许标题区整体换行（组与组之间可换行），避免被硬挤到拆字 */
-    .vr-header {
-      flex-wrap: wrap;           /* 允许 .vr-title 与 .vr-top-actions 作为两行显示 */
-      row-gap: 8px;
-    }
-
-    /* 3) 防止按钮组里按钮被挤压到缩窄或拆行 */
-    .vr-top-actions {
-      flex-wrap: nowrap;         /* 组内不换行 */
-    }
-    .vr-top-actions .vr-btn,
-    .vr-top-actions .vr-score {
-      flex: 0 0 auto;            /* 不允许被压缩 */
-    }
-
-    /* 4) 小屏时将两组上下堆叠，避免横向空间不足导致强制断行 */
-    @media (max-width: 480px) {
-      .vr-header{
-        flex-direction: column;      /* 上下排列 */
-        align-items: stretch;
-      }
-      .vr-title{
-        width: 100%;
-      }
-      .vr-top-actions{
-        width: 100%;
-        justify-content: space-between;  /* 分散排布：分数 + 两个按钮 */
-      }
-    }
-
-    /* 5) 让按钮在任何尺寸都只占一行显示 */
-    .vr-btn{
-      white-space: nowrap;
-    }
   </style>
 </head>
 <body>
